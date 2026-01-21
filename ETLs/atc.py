@@ -1,8 +1,8 @@
 import pandas as pd
 from config import PATHS, MAPA_MESES
-import utils
+from utils import *
 
-@utils.reportar_tiempo
+@reportar_tiempo
 def ejecutar():
     print("--- 🎧 Iniciando ETL Atención al Cliente ---")
     
@@ -13,7 +13,7 @@ def ejecutar():
         "Franquicia", "Ciudad", "Teléfono verificado", "Detalle Suscripcion", "Saldo"
     ]
 
-    df = utils.leer_carpeta(
+    df = leer_carpeta(
         PATHS["raw_atencion"], 
         filtro_exclusion="Consolidado", 
         columnas_esperadas=cols_input
@@ -39,11 +39,12 @@ def ejecutar():
     df['Tipo de afluencia'] = "ATENCIÓN AL CLIENTE"
     df['Mes'] = df['Fecha'].dt.month.map(MAPA_MESES)
     df = df.drop_duplicates()
+    df = limpiar_nulos_powerbi(df)
     cols_output = [
         "Source.Name", "N° Abonado", "Documento", "Cliente", "Estatus", 
         "Fecha", "Hora", "Tipo Respuesta", "Detalle Respuesta", 
         "Vendedor", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
         "Ciudad", "Tipo de afluencia", "Mes"
     ]
-
-    utils.guardar_parquet(df.reindex(columns=cols_output), "Atencion_Cliente_Gold.parquet", filas_iniciales=filas_raw)
+    guardar_parquet(df.reindex(columns=cols_output), "Atencion_Cliente_Gold.parquet", filas_iniciales=filas_raw)
+    print(f"✅ ETL Atención al Cliente finalizado. Filas iniciales: {  filas_raw }, Filas finales: {len(df)}")

@@ -3,6 +3,9 @@ import glob
 import os
 import warnings
 import time
+import datetime
+import calendar
+import re
 from functools import wraps
 from rich.console import Console
 from rich.progress import (
@@ -160,3 +163,115 @@ def tiempo(tiempo_inicio):
         style="bold blue",
         expand=False
     ))
+
+def obtener_rango_fechas(nombre_archivo, anio_base=2025):
+    """
+    Extrae FechaInicio y FechaFin basado en el nombre del archivo (ej: 'IDF ENE Q1').
+    Replica la lógica de Power Query para asignar quincenas.
+    
+    Args:
+        nombre_archivo (str): Nombre del archivo (ej: "Reporte IDF ENE Q1.xlsx")
+        anio_base (int): Año a evaluar (por defecto 2025, según lógica original)
+        
+    Returns:
+        tuple: (fecha_inicio, fecha_fin, nombre_quincena_formateado)
+               Retorna (None, None, None) si no detecta el patrón.
+    """
+    nombre_lower = nombre_archivo.lower()
+
+    # Diccionario de meses (Español e Inglés para robustez)
+    mapa_meses = {
+        'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
+        'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12,
+        'jan': 1, 'apr': 4, 'aug': 8, 'dec': 12 
+    }
+
+    # 1. Detectar Mes
+    mes_num = None
+    for key, val in mapa_meses.items():
+        if key in nombre_lower:
+            mes_num = val
+            break
+    
+    # 2. Detectar Quincena
+    quincena = None
+    if "q1" in nombre_lower:
+        quincena = "q1"
+    elif "q2" in nombre_lower:
+        quincena = "q2"
+
+    if not mes_num or not quincena:
+        return None, None, None # Archivo no cumple patrón
+
+    # 3. Calcular Fechas (Lógica de Negocio)
+    try:
+        if quincena == "q1":
+            # Regla: Q1 evalúa del día 1 del mes ANTERIOR al 15 del mes ACTUAL
+            # Si es Enero (1), el mes anterior es Diciembre (12) del año pasado
+            mes_inicio = mes_num - 1
+            anio_inicio = anio_base
+            if mes_inicio == 0: 
+                mes_inicio = 12
+                anio_inicio -= 1
+            
+            fecha_inicio = datetime.datetime(anio_inicio, mes_inicio, 1)
+            fecha_fin = datetime.datetime(anio_base, mes_num, 15)
+
+        else: # q2
+            # Regla: Q2 evalúa del día 15 del mes ANTERIOR al FIN del mes ACTUAL
+            mes_inicio = mes_num - 1
+            anio_inicio = anio_base
+            if mes_inicio == 0:
+                mes_inicio = 12
+                anio_inicio -= 1
+
+            fecha_inicio = datetime.datetime(anio_inicio, mes_inicio, 15)
+            
+            # Último día del mes actual (ej: 28, 30 o 31)
+            ultimo_dia_mes = calendar.monthrange(anio_base, mes_num)[1]
+            fecha_fin = datetime.datetime(anio_base, mes_num, ultimo_dia_mes)
+            
+        # Formatear nombre para reporte (ej: "ENE Q1")
+        # Buscamos el nombre del mes en texto (key) basado en el número
+        nombre_mes_str = [k for k, v in mapa_meses.items() if v == mes_num][0].upper()
+        nombre_quincena = f"{nombre_mes_str} {quincena.upper()}"
+
+        return fecha_inicio, fecha_fin, nombre_quincena
+
+    except Exception as e:
+        console.print(f"[red]❌ Error calculando fechas para {nombre_archivo}: {e}[/]")
+        return None, None, None
+    
+def limpiar_nulos_powerbi(df):
+    """
+    Limpia un DataFrame para que los valores nulos sean interpretados 
+    correctamente como BLANK en Power BI (vía Parquet).
+    
+    1. Reemplaza 'nan' (string) por None.
+    2. Reemplaza np.nan (float) por None en columnas de objeto.
+    3. Reemplaza NaT (tiempo) por None.
+    """
+    # Hacemos una copia para no modificar el original inesperadamente
+    df_clean = df.copy()
+
+    # 1. Identificar columnas de texto (object)
+    # En pandas, las columnas mixtas o de texto son 'object'
+    cols_texto = df_clean.select_dtypes(include=['object']).columns
+
+    # 2. Reemplazo masivo en columnas de texto
+    # Reemplazamos la cadena literal "nan" y el valor nan de numpy por None
+    # None es lo único que PyArrow (Parquet) traduce a NULL real
+    df_clean[cols_texto] = df_clean[cols_texto].replace(
+        to_replace=['nan', 'NaN', 'NAN', np.nan], 
+        value=None
+    )
+
+    # 3. Limpieza de Fechas (NaT -> None)
+    cols_fecha = df_clean.select_dtypes(include=['datetime', 'datetime64[ns]']).columns
+    # A veces es necesario convertir a object para que acepte None si falla
+    # Pero usualmente Parquet maneja NaT bien. 
+    # Sin embargo, para asegurar compatibilidad total:
+    for col in cols_fecha:
+        df_clean[col] = df_clean[col].replace({pd.NaT: None})
+
+    return df_clean

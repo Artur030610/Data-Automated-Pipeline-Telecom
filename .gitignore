@@ -1,8 +1,36 @@
-# Archivos compilados de Python
+# --- SEGURIDAD (CRÍTICO) ---
+service_account.json
+client_secret.json
+credentials.json
+.env
+
+# --- PYTHON ---
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
+venv/
+.venv/
 
-# Archivos de sistema y entorno
-.env
+# --- LOGS Y BASURA ---
+logs/
+*.log
+npm-debug.log
+
+# --- EXCEL / DATA ---
+~$*.xlsx
+*.tmp
+
+# --- IDEs ---
+.vscode/
+.idea/
+
+# --- DBT (Si estás usando dbt) ---
+target/
+dbt_packages/
+logs/dbt.log
+*.duckdb
+*.db
+*.sql
+# --- SISTEMA ---
 .DS_Store
-a.py
+Thumbs.db

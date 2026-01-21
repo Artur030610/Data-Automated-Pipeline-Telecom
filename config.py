@@ -31,7 +31,7 @@ PATHS = {
     "raw_ventas_root":      os.path.join(RUTA_BASE, "raw_data", "2-Ventas"),
     "raw_reclamos":         os.path.join(RUTA_BASE, "raw_data", "3-Reclamos"),
     "raw_atencion":         os.path.join(RUTA_BASE, "raw_data", "4-Atencion al cliente"),
-    "raw_indice_falla":     os.path.join(RUTA_BASE, "raw_data", "5-Indice de falla"),
+    "raw_idf":              os.path.join(RUTA_BASE, "raw_data", "5-Indice de falla","1-IdF"),
     "raw_sla":              os.path.join(RUTA_BASE, "raw_data", "6-SLA"),
     "raw_cobranza":         os.path.join(RUTA_BASE, "raw_data", "7-Operativos Cobranza"),
     "raw_encuestas":        os.path.join(RUTA_BASE, "raw_data", "8-Encuestas de satisfacción"),
@@ -43,12 +43,12 @@ PATHS = {
     
     # Nota: Si usas la carpeta 14
     "raw_asesores_univ_14": os.path.join(RUTA_BASE, "raw_data", "14-Universo de asesores"), 
-    
     "raw_estados":          os.path.join(RUTA_BASE, "raw_data", "15-Estados y Ciudades"),
     "raw_hist_abonados":    os.path.join(RUTA_BASE, "raw_data", "16-Historico de abonados", "1-Historico"),
     "raw_estad_abonados":   os.path.join(RUTA_BASE, "raw_data", "16-Historico de abonados", "2-Estadisticas"),
     "raw_empleados":        os.path.join(RUTA_BASE, "raw_data", "17-Empleados"),
     "raw_referidos":        os.path.join(RUTA_BASE, "raw_data", "18-Referidos"),
+    "raw_horaspago":        os.path.join(RUTA_BASE, "raw_data", "1-Recaudación", "1-Horas de pago"),
 
     # --- SUB-RUTAS ESPECÍFICAS (VENTAS) ---
     "ventas_estatus":   os.path.join(RUTA_BASE, "raw_data", "2-Ventas", "1- Ventas Estatus"),

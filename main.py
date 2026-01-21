@@ -7,31 +7,40 @@ import time
 from utils import tiempo
 
 # --- IMPORTACIÓN DE MÓDULOS ---
-# Asegúrate de importar el nuevo script GOLD aquí
 from ETLs import (
-    etl_afluencia_silver, etl_afluencia_gold, # <--- IMPORTANTE: Importar ambos
-    reclamos, ventase, recaudacion, atc, actualizacion_datos, comeback, 
-    ventas, empleados, cobranza, dimclientes, estadistica_abonado 
+    # --- PROCESOS ACTIVOS (INGESTA) ---
+    recaudacion,            # Carpeta 1
+    ventas,                 # Carpeta 2
+    ventase,                # Carpeta 2 (Estatus)
+    reclamos,               # Carpeta 3
+    atc,                    # Carpeta 4
+    idf,                    # Carpeta 5
+    cobranza,               # Carpeta 7
+    actualizacion_datos,    # Carpeta 11
+    comeback,               # Carpeta 12
+    empleados,              # Carpeta 17
+    
+    # --- TRANSFORMACIONES ---
+    etl_afluencia_silver, 
+    etl_afluencia_gold,
+    dimclientes,
+    estadistica_abonado
 )
 
 inicio_global = time.time()
 console = Console(theme=THEME_COLOR)
 
 # --- ORQUESTADOR AFLUENCIA (EL PUENTE) ---
-# Esta clase une los dos pasos (Silver -> Gold) para que el menú lo vea como uno solo
 class PipelineAfluencia:
     def ejecutar(self):
         # 1. Ejecutar Silver (Consolidación)
-        # Nota: etl_afluencia_silver.ejecutar() debe retornar la ruta del archivo generado
         ruta_silver = etl_afluencia_silver.ejecutar() 
         
         # 2. Ejecutar Gold (Enriquecimiento) si Silver funcionó
         if ruta_silver:
             etl_afluencia_gold.ejecutar(ruta_silver)
 
-# Instanciamos el orquestador
 afluencia_completa = PipelineAfluencia()
-
 
 def ejecutar_wrapper(modulo):
     """Ejecuta el método .ejecutar() de un módulo o una lista de módulos."""
@@ -46,29 +55,54 @@ def ejecutar_wrapper(modulo):
 
 # --- CONFIGURACIÓN DEL MENÚ ---
 MENU = {
-    # En la opción 1, reemplazamos 'etl_afluencia_silver' por 'afluencia_completa'
-    "1":  {"icono": "🚀", "label": "EJECUTAR TODO (Full Pipeline)", "target": [
-        ventase, reclamos, recaudacion, atc, actualizacion_datos, comeback, 
-        afluencia_completa, # <--- AQUI EL CAMBIO
-        ventas, empleados, cobranza, dimclientes
+    "1":  {"icono": "🚀", "label": "EJECUTAR TODO (Orden Lógico DW)", "target": [
+        # -------------------------------------------------------
+        # FASE 1: INGESTA DE DATOS CRUDOS (RAW LAYER)
+        # -------------------------------------------------------
+        recaudacion,            # 1. Financiero
+        ventas,                 # 2. Comercial
+        ventase,                # 2. Estatus
+        reclamos,               # 3. Soporte
+        atc,                    # 4. Atención
+        idf,           # 5. Técnico
+        cobranza,               # 7. Operativo
+        actualizacion_datos,    # 11. Calidad de Datos
+        comeback,               # 12. Retención
+        empleados,              # 17. RRHH (Base para Dimensiones)
+        
+        # -------------------------------------------------------
+        # FASE 2: DIMENSIONES (DIMENSIONS LAYER)
+        # Se ejecutan antes para que los Hechos tengan con qué cruzar
+        # -------------------------------------------------------
+        dimclientes,            # Crea la dimensión maestra de clientes
+        
+        # -------------------------------------------------------
+        # FASE 3: HECHOS Y AGREGACIONES (FACT LAYER)
+        # Afluencia va al final porque consume a Empleados y Clientes
+        # -------------------------------------------------------
+        estadistica_abonado,    # Agregaciones
+        afluencia_completa      # HECHO FINAL (Silver + Gold)
     ]},
     
-    "2":  {"icono": "💼", "label": "Ventas Estatus",             "target": ventase},
-    "3":  {"icono": "🛠️", "label": "Reclamos (Suite)",           "target": reclamos},
-    "4":  {"icono": "💰", "label": "Recaudación",                "target": recaudacion},
-    "5":  {"icono": "🎧", "label": "Atención al Cliente (ATC)",  "target": atc},
-    "6":  {"icono": "📝", "label": "Actualización de Datos",     "target": actualizacion_datos},
-    "7":  {"icono": "🏠", "label": "Come Back Home (CBH)",       "target": comeback},
-    "8":  {"icono": "📊", "label": "Ventas (Listado)",           "target": ventas},
-    "9":  {"icono": "🔄", "label": "Generar Afluencia (Silver+Gold)", "target": afluencia_completa}, 
-    "10": {"icono": "👤", "label": "Maestro de Empleados",       "target": empleados},
-    "11": {"icono": "📞", "label": "Llamadas de Cobranza",       "target": cobranza},
-    "12": {"icono": "💎", "label": "Dimensión Clientes (Gold)",  "target": dimclientes},
-    "13": {"icono": "📊", "label": "Estadística de Abonados",    "target": estadistica_abonado}
+    # --- OPCIONES INDIVIDUALES ---
+    "2":  {"icono": "💰", "label": "1. Recaudación",             "target": recaudacion},
+    "3":  {"icono": "📊", "label": "2. Ventas (General)",        "target": ventas},
+    "4":  {"icono": "💼", "label": "2. Ventas (Estatus)",        "target": ventase},
+    "5":  {"icono": "🛠️", "label": "3. Reclamos (Suite)",        "target": reclamos},
+    "6":  {"icono": "🎧", "label": "4. Atención al Cliente",     "target": atc},
+    "7":  {"icono": "📉", "label": "5. Índice de Falla",         "target": idf},
+    "8":  {"icono": "📞", "label": "7. Llamadas Cobranza",       "target": cobranza},
+    "9":  {"icono": "📝", "label": "11. Act. Datos",             "target": actualizacion_datos},
+    "10": {"icono": "🏠", "label": "12. Come Back Home",         "target": comeback},
+    "11": {"icono": "👤", "label": "17. Empleados",              "target": empleados},
+    
+    # --- TRANSFORMACIONES ---
+    "12": {"icono": "💎", "label": "Dimensión Clientes",         "target": dimclientes},
+    "13": {"icono": "📈", "label": "Estadística Abonado",        "target": estadistica_abonado},
+    "14": {"icono": "🔄", "label": "Generar Afluencia (S+G)",    "target": afluencia_completa}
 }
 
 def mostrar_menu():
-    """Genera una tabla visual con Rich basada en el diccionario MENU."""
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("ID", style="bold yellow", justify="right")
     table.add_column("Icono")

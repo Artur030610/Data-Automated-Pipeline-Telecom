@@ -2,7 +2,7 @@ import pandas as pd
 import os
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from config import PATHS
-from utils import guardar_parquet, reportar_tiempo, console
+from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 
 @reportar_tiempo
 def ejecutar(ruta_silver): 
@@ -70,7 +70,7 @@ def ejecutar(ruta_silver):
 
         progress.update(task2, advance=1)
         df = df.drop_duplicates()
-        
+        df = limpiar_nulos_powerbi(df)
         # --- GUARDADO ---
         guardar_parquet(df, "Afluencia_Gold.parquet", filas_iniciales=len(df))
         

@@ -2,7 +2,7 @@
 import pandas as pd
 import numpy as np
 from config import PATHS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo,limpiar_nulos_powerbi, console
 from rich.panel import Panel
 
 @reportar_tiempo
@@ -75,11 +75,12 @@ def ejecutar():
         df = df.rename(columns={"Hora Llamada": "Hora"})
         df = df.drop(columns=["Cliente"], errors="ignore")
         df = df.drop_duplicates()
+        df = limpiar_nulos_powerbi(df)
         # Hora como string para evitar formateos extraños (0.54343)
         df["Hora"] = df["Hora"].astype(str)
 
         df = df.sort_values(by="Fecha Llamada", ascending=False)
-        df = df.drop_duplicates()  
+        
     # 4. Carga
     # Nota: filas_iniciales=filas_raw mostrará en el reporte cuántas se eliminaron por no tener Abonado
     guardar_parquet(df, "Llamadas_Cobranza_Gold.parquet", filas_iniciales=filas_raw)

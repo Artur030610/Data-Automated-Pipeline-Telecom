@@ -3,7 +3,7 @@ import re
 import os
 from datetime import datetime
 from config import PATHS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 from unidecode import unidecode
 from rich.table import Table
 
@@ -158,6 +158,7 @@ def ejecutar():
     ]
     cols_existentes = [c for c in cols_finales_orden if c in df_final.columns]
     df_final = df_final[cols_existentes]
+    df_final = limpiar_nulos_powerbi(df_final)
 
     # Reporte de control
     if 'Fecha_Origen' in df_final.columns:

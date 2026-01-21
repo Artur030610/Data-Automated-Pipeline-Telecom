@@ -2,7 +2,7 @@ import pandas as pd
 import os
 # Importamos la nueva lista de carpetas
 from config import PATHS, FOLDERS_ACT_DATOS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 
 @reportar_tiempo
 def ejecutar():
@@ -78,7 +78,7 @@ def ejecutar():
     
     df_final = df.reindex(columns=cols_finales)
     df_final = df_final.drop_duplicates()
-
+    df_final = limpiar_nulos_powerbi(df_final)
     # --- 5. CARGA ---
     guardar_parquet(
         df_final, 

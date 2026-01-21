@@ -1,6 +1,6 @@
 import pandas as pd
 from config import PATHS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 
 @reportar_tiempo
 def ejecutar():
@@ -63,6 +63,7 @@ def ejecutar():
     # Reindex asegura que si falta alguna columna no explote, sino que ponga NaN
     df_final = df.reindex(columns=cols_finales)
     df_final = df_final.drop_duplicates()
+    df_final = limpiar_nulos_powerbi(df_final)
     # 6. Carga
     guardar_parquet(
         df_final, 
