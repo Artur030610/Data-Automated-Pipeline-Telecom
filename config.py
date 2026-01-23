@@ -32,6 +32,7 @@ PATHS = {
     "raw_reclamos":         os.path.join(RUTA_BASE, "raw_data", "3-Reclamos"),
     "raw_atencion":         os.path.join(RUTA_BASE, "raw_data", "4-Atencion al cliente"),
     "raw_idf":              os.path.join(RUTA_BASE, "raw_data", "5-Indice de falla","1-IdF"),
+    "raw_abonados_idf":     os.path.join(RUTA_BASE, "raw_data", "5-Indice de falla","2-Abonados"),
     "raw_sla":              os.path.join(RUTA_BASE, "raw_data", "6-SLA"),
     "raw_cobranza":         os.path.join(RUTA_BASE, "raw_data", "7-Operativos Cobranza"),
     "raw_encuestas":        os.path.join(RUTA_BASE, "raw_data", "8-Encuestas de satisfacción"),

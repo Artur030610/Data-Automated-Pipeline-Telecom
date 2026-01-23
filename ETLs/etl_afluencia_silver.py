@@ -81,7 +81,7 @@ def ejecutar():
     
     # --- PASO 1: CONSOLIDACIÓN DE FUENTES ---
     cols_necesarias = [
-        "N° Abonado", "Estatus", "Fecha", "Vendedor", 
+        "N° Abonado","Documento", "Estatus", "Fecha", "Vendedor", 
         "Grupo Afinidad", "Nombre Franquicia", "Ciudad", 
         "Tipo de afluencia", "Oficina", "Clasificacion", "Hora"
     ]

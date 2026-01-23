@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np 
 import glob
 import os
 import warnings
@@ -34,10 +35,14 @@ def reportar_tiempo(func):
         return result
     return wrapper
 
-# --- LECTURA ---
-def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None):
+# --- LECTURA (CORREGIDA CON DTYPE) ---
+def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None, dtype=None):
+    """
+    Carga Excels de una carpeta usando Calamine.
+    - dtype: Permite forzar tipos de datos (ej: str para no perder ceros en IDs).
+    """
     if not os.path.exists(ruta_carpeta):
-        console.print(f"[error]❌ La carpeta no existe: {ruta_carpeta}[/]")
+        console.print(f"[bold red]❌ La carpeta no existe: {ruta_carpeta}[/]")
         return pd.DataFrame()
 
     archivos = glob.glob(os.path.join(ruta_carpeta, "*.xlsx"))
@@ -62,6 +67,7 @@ def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None):
             nombre = os.path.basename(archivo)
             progress.update(task, description=f"📄 {nombre}")
             
+            # Filtros
             if nombre.startswith("~") or "$" in nombre: 
                 progress.advance(task)
                 continue
@@ -70,13 +76,18 @@ def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None):
                 continue
                 
             try:
-                # Usamos calamine para velocidad
-                df = pd.read_excel(archivo, engine="calamine")
+                # Usamos calamine para velocidad y pasamos dtype
+                df = pd.read_excel(
+                    archivo, 
+                    engine="calamine",
+                    dtype=dtype  # <--- ESTO ES CRÍTICO PARA LOS IDs
+                )
                 
                 # Sanitizar cabeceras
                 df.columns = df.columns.astype(str).str.strip()
 
                 if columnas_esperadas:
+                    # reindex evita error si falta columna (pone NaN)
                     df = df.reindex(columns=columnas_esperadas)
                 
                 df["Source.Name"] = nombre 
@@ -106,15 +117,15 @@ def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None)
     if ruta_destino:
         # Modo Personalizado (ej: Silver)
         ruta_salida = ruta_destino
-        # Aseguramos que la carpeta exista (por si es la primera vez que se crea silver_data)
+        # Aseguramos que la carpeta exista
         os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
     else:
-        # Modo Default (Gold) - Compatible con scripts antiguos
+        # Modo Default (Gold)
         os.makedirs(PATHS["gold"], exist_ok=True)
         ruta_salida = os.path.join(PATHS["gold"], nombre_archivo)
     
     try:
-        # Sanitización de objetos a string para Parquet
+        # Sanitización de objetos a string para Parquet (Evita errores de PyArrow)
         for col in df.select_dtypes(include=['object']).columns:
             df[col] = df[col].astype(str)
             
@@ -136,15 +147,14 @@ def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None)
             
             console.print(grid)
             
-            # Mensaje diferenciado según destino
             tipo_archivo = "SILVER" if "silver" in ruta_salida.lower() else "GOLD"
-            console.print(f"[success]✅ ARCHIVO {tipo_archivo} GENERADO: {nombre_archivo}[/]")
+            console.print(f"[bold green]✅ ARCHIVO {tipo_archivo} GENERADO: {nombre_archivo}[/]")
             
         else:
-            console.print(f"[success]✅ GUARDADO: {nombre_archivo} -> {filas_finales:,} filas.[/]")
+            console.print(f"[bold green]✅ GUARDADO: {nombre_archivo} -> {filas_finales:,} filas.[/]")
             
     except Exception as e:
-        console.print(f"[error]❌ FALLO GUARDANDO {nombre_archivo}: {e}[/]")
+        console.print(f"[bold red]❌ FALLO GUARDANDO {nombre_archivo}: {e}[/]")
     
 def tiempo(tiempo_inicio):
     """
@@ -167,19 +177,10 @@ def tiempo(tiempo_inicio):
 def obtener_rango_fechas(nombre_archivo, anio_base=2025):
     """
     Extrae FechaInicio y FechaFin basado en el nombre del archivo (ej: 'IDF ENE Q1').
-    Replica la lógica de Power Query para asignar quincenas.
-    
-    Args:
-        nombre_archivo (str): Nombre del archivo (ej: "Reporte IDF ENE Q1.xlsx")
-        anio_base (int): Año a evaluar (por defecto 2025, según lógica original)
-        
-    Returns:
-        tuple: (fecha_inicio, fecha_fin, nombre_quincena_formateado)
-               Retorna (None, None, None) si no detecta el patrón.
     """
     nombre_lower = nombre_archivo.lower()
 
-    # Diccionario de meses (Español e Inglés para robustez)
+    # Diccionario de meses
     mapa_meses = {
         'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
         'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12,
@@ -201,13 +202,11 @@ def obtener_rango_fechas(nombre_archivo, anio_base=2025):
         quincena = "q2"
 
     if not mes_num or not quincena:
-        return None, None, None # Archivo no cumple patrón
+        return None, None, None
 
-    # 3. Calcular Fechas (Lógica de Negocio)
+    # 3. Calcular Fechas
     try:
         if quincena == "q1":
-            # Regla: Q1 evalúa del día 1 del mes ANTERIOR al 15 del mes ACTUAL
-            # Si es Enero (1), el mes anterior es Diciembre (12) del año pasado
             mes_inicio = mes_num - 1
             anio_inicio = anio_base
             if mes_inicio == 0: 
@@ -218,7 +217,6 @@ def obtener_rango_fechas(nombre_archivo, anio_base=2025):
             fecha_fin = datetime.datetime(anio_base, mes_num, 15)
 
         else: # q2
-            # Regla: Q2 evalúa del día 15 del mes ANTERIOR al FIN del mes ACTUAL
             mes_inicio = mes_num - 1
             anio_inicio = anio_base
             if mes_inicio == 0:
@@ -226,13 +224,9 @@ def obtener_rango_fechas(nombre_archivo, anio_base=2025):
                 anio_inicio -= 1
 
             fecha_inicio = datetime.datetime(anio_inicio, mes_inicio, 15)
-            
-            # Último día del mes actual (ej: 28, 30 o 31)
             ultimo_dia_mes = calendar.monthrange(anio_base, mes_num)[1]
             fecha_fin = datetime.datetime(anio_base, mes_num, ultimo_dia_mes)
             
-        # Formatear nombre para reporte (ej: "ENE Q1")
-        # Buscamos el nombre del mes en texto (key) basado en el número
         nombre_mes_str = [k for k, v in mapa_meses.items() if v == mes_num][0].upper()
         nombre_quincena = f"{nombre_mes_str} {quincena.upper()}"
 
@@ -244,34 +238,18 @@ def obtener_rango_fechas(nombre_archivo, anio_base=2025):
     
 def limpiar_nulos_powerbi(df):
     """
-    Limpia un DataFrame para que los valores nulos sean interpretados 
-    correctamente como BLANK en Power BI (vía Parquet).
-    
-    1. Reemplaza 'nan' (string) por None.
-    2. Reemplaza np.nan (float) por None en columnas de objeto.
-    3. Reemplaza NaT (tiempo) por None.
+    Limpia un DataFrame para Power BI.
+    Solo busca nulos en columnas tipo 'object' (texto y fechas no convertidas).
     """
-    # Hacemos una copia para no modificar el original inesperadamente
     df_clean = df.copy()
-
-    # 1. Identificar columnas de texto (object)
-    # En pandas, las columnas mixtas o de texto son 'object'
+    
+    # Seleccionamos columnas de tipo objeto (aquí entran tus fechas si están en texto)
     cols_texto = df_clean.select_dtypes(include=['object']).columns
-
-    # 2. Reemplazo masivo en columnas de texto
-    # Reemplazamos la cadena literal "nan" y el valor nan de numpy por None
-    # None es lo único que PyArrow (Parquet) traduce a NULL real
+    
+    # Reemplazo seguro: cambia variantes de texto 'nan' y nulos reales por None
     df_clean[cols_texto] = df_clean[cols_texto].replace(
         to_replace=['nan', 'NaN', 'NAN', np.nan], 
         value=None
     )
-
-    # 3. Limpieza de Fechas (NaT -> None)
-    cols_fecha = df_clean.select_dtypes(include=['datetime', 'datetime64[ns]']).columns
-    # A veces es necesario convertir a object para que acepte None si falla
-    # Pero usualmente Parquet maneja NaT bien. 
-    # Sin embargo, para asegurar compatibilidad total:
-    for col in cols_fecha:
-        df_clean[col] = df_clean[col].replace({pd.NaT: None})
 
     return df_clean

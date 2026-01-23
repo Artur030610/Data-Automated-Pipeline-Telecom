@@ -8,7 +8,7 @@ from utils import tiempo
 
 # --- IMPORTACIÓN DE MÓDULOS ---
 from ETLs import (
-    # --- PROCESOS ACTIVOS (INGESTA) ---
+    # --- PROCESOS ACTIVOS (INGESTA)4 ---
     recaudacion,            # Carpeta 1
     ventas,                 # Carpeta 2
     ventase,                # Carpeta 2 (Estatus)
@@ -64,7 +64,7 @@ MENU = {
         ventase,                # 2. Estatus
         reclamos,               # 3. Soporte
         atc,                    # 4. Atención
-        idf,           # 5. Técnico
+        #idf,           # 5. Técnico
         cobranza,               # 7. Operativo
         actualizacion_datos,    # 11. Calidad de Datos
         comeback,               # 12. Retención
