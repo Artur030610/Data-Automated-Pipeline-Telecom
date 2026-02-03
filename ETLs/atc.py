@@ -9,8 +9,8 @@ def ejecutar():
     cols_input = [
         "N° Abonado", "Documento", "Cliente", "Estatus", "Fecha Llamada", 
         "Hora Llamada", "Tipo Llamada", "Tipo Respuesta", "Detalle Respuesta", 
-        "Responsable", "Suscripción", "Teléfono", "Grupo Afinidad", 
-        "Franquicia", "Ciudad", "Teléfono verificado", "Detalle Suscripcion", "Saldo"
+        "Responsable", "Suscripción", "Grupo Afinidad", 
+        "Franquicia", "Ciudad", "Detalle Suscripcion", "Saldo","Observación"
     ]
 
     df = leer_carpeta(
@@ -38,10 +38,11 @@ def ejecutar():
 
     df['Tipo de afluencia'] = "ATENCIÓN AL CLIENTE"
     df['Mes'] = df['Fecha'].dt.month.map(MAPA_MESES)
-    df = df.drop_duplicates()
+    df = df.drop_duplicates(subset=["N° Abonado", "Documento", "Fecha", "Hora", 
+                                    "Tipo Respuesta", "Detalle Respuesta", "Vendedor"])
     df = limpiar_nulos_powerbi(df)
     cols_output = [
-        "Source.Name", "N° Abonado", "Documento", "Cliente", "Estatus", 
+         "N° Abonado", "Documento", "Cliente", "Estatus", 
         "Fecha", "Hora", "Tipo Respuesta", "Detalle Respuesta", 
         "Vendedor", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
         "Ciudad", "Tipo de afluencia", "Mes"

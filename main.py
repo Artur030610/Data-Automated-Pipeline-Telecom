@@ -19,7 +19,7 @@ from ETLs import (
     actualizacion_datos,    # Carpeta 11
     comeback,               # Carpeta 12
     empleados,              # Carpeta 17
-    
+    sla,
     # --- TRANSFORMACIONES ---
     etl_afluencia_silver, 
     etl_afluencia_gold,
@@ -64,17 +64,18 @@ MENU = {
         ventase,                # 2. Estatus
         reclamos,               # 3. Soporte
         atc,                    # 4. Atención
-        #idf,           # 5. Técnico
+        idf,                    # 5. Indice de falla
+        sla,                    # 6. SLA 
         cobranza,               # 7. Operativo
         actualizacion_datos,    # 11. Calidad de Datos
-        comeback,               # 12. Retención
+        comeback,               # 12. Recuperación de Clientes
         empleados,              # 17. RRHH (Base para Dimensiones)
         
         # -------------------------------------------------------
         # FASE 2: DIMENSIONES (DIMENSIONS LAYER)
         # Se ejecutan antes para que los Hechos tengan con qué cruzar
         # -------------------------------------------------------
-        dimclientes,            # Crea la dimensión maestra de clientes
+        #dimclientes,            # Crea la dimensión maestra de clientes
         
         # -------------------------------------------------------
         # FASE 3: HECHOS Y AGREGACIONES (FACT LAYER)
@@ -91,15 +92,16 @@ MENU = {
     "5":  {"icono": "🛠️", "label": "3. Reclamos (Suite)",        "target": reclamos},
     "6":  {"icono": "🎧", "label": "4. Atención al Cliente",     "target": atc},
     "7":  {"icono": "📉", "label": "5. Índice de Falla",         "target": idf},
-    "8":  {"icono": "📞", "label": "7. Llamadas Cobranza",       "target": cobranza},
-    "9":  {"icono": "📝", "label": "11. Act. Datos",             "target": actualizacion_datos},
-    "10": {"icono": "🏠", "label": "12. Come Back Home",         "target": comeback},
-    "11": {"icono": "👤", "label": "17. Empleados",              "target": empleados},
+    "8":  {"icono": "📉", "label": "6. Acuerdos de servicio",    "target": sla },
+    "9":  {"icono": "📞", "label": "7. Llamadas Cobranza",       "target": cobranza},
+    "10":  {"icono": "📝", "label": "11. Act. Datos",             "target": actualizacion_datos},
+    "11": {"icono": "🏠", "label": "12. Come Back Home",         "target": comeback},
+    "12": {"icono": "👤", "label": "17. Empleados",              "target": empleados},
     
     # --- TRANSFORMACIONES ---
-    "12": {"icono": "💎", "label": "Dimensión Clientes",         "target": dimclientes},
-    "13": {"icono": "📈", "label": "Estadística Abonado",        "target": estadistica_abonado},
-    "14": {"icono": "🔄", "label": "Generar Afluencia (S+G)",    "target": afluencia_completa}
+    "13": {"icono": "💎", "label": "Dimensión Clientes",         "target": dimclientes},
+    "14": {"icono": "📈", "label": "Estadística Abonado",        "target": estadistica_abonado},
+    "15": {"icono": "🔄", "label": "Generar Afluencia (S+G)",    "target": afluencia_completa}
 }
 
 def mostrar_menu():

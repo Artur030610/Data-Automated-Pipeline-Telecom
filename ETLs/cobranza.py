@@ -10,7 +10,7 @@ def ejecutar():
 
     # 1. Definición de Inputs
     cols_input = [
-        "N° Abonado", "Cliente", "Estatus", "Saldo", 
+        "N° Abonado", "Documento", "Cliente", "Estatus", "Saldo", 
         "Fecha Llamada", "Hora Llamada", "Tipo Respuesta", 
         "Detalle Respuesta", "Responsable", "Franquicia", "Ciudad"
     ]
@@ -78,8 +78,11 @@ def ejecutar():
         # --- E. LIMPIEZA FINAL ---
         df = df.rename(columns={"Hora Llamada": "Hora"})
         df = df.drop(columns=["Cliente"], errors="ignore")
-        df = df.drop_duplicates()
-        
+
+        df = df.drop_duplicates(subset=["N° Abonado", "Documento", "Saldo", 
+        "Fecha Llamada", "Hora", "Tipo Respuesta", 
+        "Detalle Respuesta", "Responsable", "Franquicia"])
+
         # Limpieza de nulos para Power BI
         df = limpiar_nulos_powerbi(df)
         

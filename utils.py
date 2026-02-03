@@ -35,11 +35,11 @@ def reportar_tiempo(func):
         return result
     return wrapper
 
-# --- LECTURA (CORREGIDA CON DTYPE) ---
+# --- LECTURA (MEJORADA CON VALIDACIÓN) ---
 def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None, dtype=None):
     """
     Carga Excels de una carpeta usando Calamine.
-    - dtype: Permite forzar tipos de datos (ej: str para no perder ceros en IDs).
+    - Valida si faltan columnas antes de reindexar.
     """
     if not os.path.exists(ruta_carpeta):
         console.print(f"[bold red]❌ La carpeta no existe: {ruta_carpeta}[/]")
@@ -67,7 +67,7 @@ def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None, d
             nombre = os.path.basename(archivo)
             progress.update(task, description=f"📄 {nombre}")
             
-            # Filtros
+            # Filtros de archivos temporales
             if nombre.startswith("~") or "$" in nombre: 
                 progress.advance(task)
                 continue
@@ -76,18 +76,26 @@ def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None, d
                 continue
                 
             try:
-                # Usamos calamine para velocidad y pasamos dtype
+                # Lectura rápida con calamine
                 df = pd.read_excel(
                     archivo, 
                     engine="calamine",
-                    dtype=dtype  # <--- ESTO ES CRÍTICO PARA LOS IDs
+                    dtype=dtype 
                 )
                 
-                # Sanitizar cabeceras
+                # Sanitizar cabeceras (eliminar espacios en nombres de columnas)
                 df.columns = df.columns.astype(str).str.strip()
 
                 if columnas_esperadas:
-                    # reindex evita error si falta columna (pone NaN)
+                    # --- CORRECCIÓN 1: VALIDACIÓN DE COLUMNAS ---
+                    columnas_presentes = set(df.columns)
+                    columnas_requeridas = set(columnas_esperadas)
+                    faltantes = columnas_requeridas - columnas_presentes
+                    
+                    if faltantes:
+                        console.print(f"[yellow]⚠️  Advertencia en {nombre}: Faltan columnas {faltantes}[/]")
+                    
+                    # Reindex rellena con NaN lo que falte y descarta lo que sobre
                     df = df.reindex(columns=columnas_esperadas)
                 
                 df["Source.Name"] = nombre 
@@ -102,36 +110,63 @@ def leer_carpeta(ruta_carpeta, filtro_exclusion=None, columnas_esperadas=None, d
         
     return pd.concat(lista_dfs, ignore_index=True)
 
-# --- GUARDADO FLEXIBLE (SILVER/GOLD) ---
+# --- LIMPIEZA DE NULOS (PODEROSA) ---
+def limpiar_nulos_powerbi(df):
+    """
+    Limpia un DataFrame para Power BI.
+    Elimina espacios en blanco, strings vacíos y textos 'nan'.
+    """
+    df_clean = df.copy()
+    
+    # Seleccionamos columnas de tipo objeto
+    cols_texto = df_clean.select_dtypes(include=['object']).columns
+    
+    # --- CORRECCIÓN 2: LIMPIEZA PROFUNDA CON REGEX ---
+    # 1. Convertir espacios (' '), vacíos ('') y tabs a NaN real
+    df_clean[cols_texto] = df_clean[cols_texto].replace(r'^\s*$', np.nan, regex=True)
+    
+    # 2. Convertir textos literales "nan", "None", "null" a NaN real
+    valores_basura = ['nan', 'NaN', 'NAN', 'None', 'null', 'Null']
+    df_clean[cols_texto] = df_clean[cols_texto].replace(valores_basura, np.nan)
+
+    return df_clean
+
+# --- GUARDADO (SILVER/GOLD) ---
 def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None):
     """
-    Guarda el archivo y muestra estadísticas de limpieza.
-    - Si ruta_destino es None: Guarda en carpeta GOLD (Comportamiento default).
-    - Si ruta_destino tiene valor: Guarda en esa ruta específica (Para Silver).
+    Guarda el archivo en Parquet asegurando compatibilidad con Power BI.
+    
+    Argumentos:
+        ruta_destino (str, opcional): Carpeta donde guardar. 
+                                      Si es None, usa PATHS["gold"] por defecto.
     """
     if df.empty:
         console.print(f"[warning]⚠️ Dataset vacío para {nombre_archivo}. Omitido.[/]")
         return
 
-    # LÓGICA DE RUTAS
+    # --- LÓGICA DE RUTAS (CORREGIDA) ---
+    # 1. Decidimos la CARPETA destino
     if ruta_destino:
-        # Modo Personalizado (ej: Silver)
-        ruta_salida = ruta_destino
-        # Aseguramos que la carpeta exista
-        os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
+        carpeta_salida = ruta_destino
     else:
-        # Modo Default (Gold)
-        os.makedirs(PATHS["gold"], exist_ok=True)
-        ruta_salida = os.path.join(PATHS["gold"], nombre_archivo)
+        # Comportamiento por defecto: Ir a Gold
+        carpeta_salida = PATHS.get("gold", "data/gold") # Usa un fallback si no existe la key
+
+    # 2. Creamos la carpeta si no existe
+    os.makedirs(carpeta_salida, exist_ok=True)
+    
+    # 3. Construimos la ruta completa (Carpeta + Nombre Archivo)
+    ruta_salida = os.path.join(carpeta_salida, nombre_archivo)
     
     try:
-        # Sanitización de objetos a string para Parquet (Evita errores de PyArrow)
+        # --- LIMPIEZA PARA POWER BI ---
+        # Convierte objetos a string para evitar conflictos en PBI
         for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].astype(str)
+            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) and x != "" else None)
             
         df.to_parquet(ruta_salida, index=False)
         
-        # --- REPORTE VISUAL DE LIMPIEZA ---
+        # --- REPORTE VISUAL ---
         filas_finales = len(df)
         
         if filas_iniciales is not None:
@@ -147,15 +182,20 @@ def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None)
             
             console.print(grid)
             
-            tipo_archivo = "SILVER" if "silver" in ruta_salida.lower() else "GOLD"
-            console.print(f"[bold green]✅ ARCHIVO {tipo_archivo} GENERADO: {nombre_archivo}[/]")
+            # Detectamos visualmente dónde cayó para el log
+            tipo = "CUSTOM"
+            if ruta_destino == PATHS.get("silver"): tipo = "SILVER"
+            if ruta_destino == PATHS.get("gold") or ruta_destino is None: tipo = "GOLD"
+            
+            console.print(f"[bold green]✅ ARCHIVO {tipo} GENERADO: {nombre_archivo}[/]")
+            console.print(f"   📂 Ruta: {ruta_salida}")
             
         else:
-            console.print(f"[bold green]✅ GUARDADO: {nombre_archivo} -> {filas_finales:,} filas.[/]")
+            console.print(f"[bold green]✅ GUARDADO: {nombre_archivo} ({filas_finales:,} filas)[/]")
             
     except Exception as e:
         console.print(f"[bold red]❌ FALLO GUARDANDO {nombre_archivo}: {e}[/]")
-    
+        
 def tiempo(tiempo_inicio):
     """
     Calcula el tiempo total desde tiempo_inicio hasta ahora.
@@ -173,83 +213,42 @@ def tiempo(tiempo_inicio):
         style="bold blue",
         expand=False
     ))
-
-def obtener_rango_fechas(nombre_archivo, anio_base=2025):
+def obtener_rango_fechas(nombre_archivo):
     """
-    Extrae FechaInicio y FechaFin basado en el nombre del archivo (ej: 'IDF ENE Q1').
+    Parsea archivos con formato: 'Data - IdF 1-12-2025 al 15-1-2026.xlsx'
+    Retorna: FechaInicio, FechaFin, Etiqueta (Ej: ENE 2026 Q1)
     """
-    nombre_lower = nombre_archivo.lower()
-
-    # Diccionario de meses
-    mapa_meses = {
-        'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6,
-        'jul': 7, 'ago': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dic': 12,
-        'jan': 1, 'apr': 4, 'aug': 8, 'dec': 12 
-    }
-
-    # 1. Detectar Mes
-    mes_num = None
-    for key, val in mapa_meses.items():
-        if key in nombre_lower:
-            mes_num = val
-            break
+    nombre_limpio = os.path.basename(nombre_archivo).lower()
     
-    # 2. Detectar Quincena
-    quincena = None
-    if "q1" in nombre_lower:
-        quincena = "q1"
-    elif "q2" in nombre_lower:
-        quincena = "q2"
-
-    if not mes_num or not quincena:
+    # Expresión regular para capturar: dia-mes-año al dia-mes-año
+    # \d{1,2} significa 1 o 2 dígitos (ej: 1 o 15)
+    # \d{4} significa 4 dígitos (ej: 2025)
+    patron = r"(\d{1,2}-\d{1,2}-\d{4})\s+al\s+(\d{1,2}-\d{1,2}-\d{4})"
+    
+    match = re.search(patron, nombre_limpio)
+    
+    if not match:
         return None, None, None
 
-    # 3. Calcular Fechas
     try:
-        if quincena == "q1":
-            mes_inicio = mes_num - 1
-            anio_inicio = anio_base
-            if mes_inicio == 0: 
-                mes_inicio = 12
-                anio_inicio -= 1
-            
-            fecha_inicio = datetime.datetime(anio_inicio, mes_inicio, 1)
-            fecha_fin = datetime.datetime(anio_base, mes_num, 15)
+        # Extraemos las cadenas de texto detectadas
+        str_inicio, str_fin = match.groups()
+        
+        # Convertimos a objetos datetime (El formato es dia-mes-año)
+        fecha_inicio = datetime.datetime.strptime(str_inicio, "%d-%m-%Y")
+        fecha_fin = datetime.datetime.strptime(str_fin, "%d-%m-%Y")
 
-        else: # q2
-            mes_inicio = mes_num - 1
-            anio_inicio = anio_base
-            if mes_inicio == 0:
-                mes_inicio = 12
-                anio_inicio -= 1
-
-            fecha_inicio = datetime.datetime(anio_inicio, mes_inicio, 15)
-            ultimo_dia_mes = calendar.monthrange(anio_base, mes_num)[1]
-            fecha_fin = datetime.datetime(anio_base, mes_num, ultimo_dia_mes)
-            
-        nombre_mes_str = [k for k, v in mapa_meses.items() if v == mes_num][0].upper()
-        nombre_quincena = f"{nombre_mes_str} {quincena.upper()}"
-
-        return fecha_inicio, fecha_fin, nombre_quincena
+        # --- Generar Etiqueta para Power BI ---
+        # Lógica: Si termina el 15 o antes -> Q1. Si termina después -> Q2.
+        quincena_str = "Q1" if fecha_fin.day <= 15 else "Q2"
+        
+        meses = ["", "ENE", "FEB", "MAR", "ABR", "MAY", "JUN", 
+                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
+        
+        nombre_etiqueta = f"{meses[fecha_fin.month]} {fecha_fin.year} {quincena_str}"
+        
+        return fecha_inicio, fecha_fin, nombre_etiqueta
 
     except Exception as e:
-        console.print(f"[red]❌ Error calculando fechas para {nombre_archivo}: {e}[/]")
+        print(f"Error parseando fechas en {nombre_archivo}: {e}")
         return None, None, None
-    
-def limpiar_nulos_powerbi(df):
-    """
-    Limpia un DataFrame para Power BI.
-    Solo busca nulos en columnas tipo 'object' (texto y fechas no convertidas).
-    """
-    df_clean = df.copy()
-    
-    # Seleccionamos columnas de tipo objeto (aquí entran tus fechas si están en texto)
-    cols_texto = df_clean.select_dtypes(include=['object']).columns
-    
-    # Reemplazo seguro: cambia variantes de texto 'nan' y nulos reales por None
-    df_clean[cols_texto] = df_clean[cols_texto].replace(
-        to_replace=['nan', 'NaN', 'NAN', np.nan], 
-        value=None
-    )
-
-    return df_clean
