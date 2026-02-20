@@ -1,80 +1,109 @@
 import pandas as pd
-from config import PATHS 
+import os
+import re
+from config import PATHS
 import utils
 
 @utils.reportar_tiempo
 def ejecutar():
+    utils.console.rule("[bold magenta]ETL: VENTAS ESTATUS (INCREMENTAL)[/]")
     
-    # 1. CARGA DE DATOS
-    df = utils.leer_carpeta(PATHS["ventas_estatus"], filtro_exclusion="Consolidado")
-    
-    if df.empty: return
-    filas_raw = len(df)
+    # 1. CONFIGURACIÓN
+    RUTA_RAW = PATHS["ventas_estatus"]
+    NOMBRE_GOLD = "Ventas_Estatus_Gold.parquet"
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
 
-    # ==========================================
-    # 2. NORMALIZACIÓN DE COLUMNAS
-    # ==========================================
-    # A. Limpieza de espacios invisibles (Vital)
-    df.columns = df.columns.str.strip()
+    # 2. INGESTA INTELIGENTE
+    # Usamos "Fecha" porque así se llama la columna en el GOLD (ya renombrada)
+    df_nuevo, df_historico = utils.ingesta_inteligente(
+        ruta_raw=RUTA_RAW, 
+        ruta_gold=RUTA_GOLD_COMPLETA, 
+        col_fecha_corte="Fecha"
+    )
 
-    # B. Renombrado Estándar
-    mapa_columnas = {
-        "Fecha Venta": "Fecha", 
-        "Franquicia": "Nombre Franquicia", 
-        "Hora venta": "Hora",
-        "Cédula": "Documento",    # Sinónimos comunes
-        "Rif": "Documento",
-        "Nro. Doc": "Documento"
-    }
-    df = df.rename(columns=mapa_columnas)
-    
-    # C. Asegurar existencia de columnas críticas
-    # Esto evita KeyErrors si algún archivo viene incompleto
-    cols_check = ["Paquete/Servicio", "Vendedor", "N° Abonado", "Cliente", "Estatus", "Documento"]
-    for col in cols_check:
-        if col not in df.columns:
-            df[col] = "" 
+    # Si no hay nada que hacer, salimos
+    if df_nuevo.empty and not df_historico.empty:
+        utils.console.print("[bold green]✅ Proceso terminado sin cambios.[/]")
+        return
 
-    # ==========================================
-    # 3. TRANSFORMACIONES
-    # ==========================================
-    # Estandarización de textos
-    df["Paquete/Servicio"] = df["Paquete/Servicio"].astype(str).str.upper()
-    df["Vendedor"] = df["Vendedor"].astype(str).str.upper().str.strip()
-    
-    # Filtro 1: Excluir Fibex Play
-    df = df[~df["Paquete/Servicio"].str.contains("FIBEX PLAY|FIBEXPLAY", na=False, regex=True)].copy()
+    # 3. TRANSFORMACIÓN (SOLO DATOS NUEVOS)
+    if not df_nuevo.empty:
+        utils.console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} filas nuevas...[/]")
+        
+        # A. Limpieza de columnas del Excel Raw
+        df_nuevo.columns = df_nuevo.columns.str.strip()
 
-    # Etiquetado
-    df["Tipo de afluencia"] = "Ventas"
-    
-    # Filtro 2: Excluir Ventas Calle/Agente
-    df = df[~df["Vendedor"].str.contains("VENTAS CALLE|AGENTE", regex=True, na=False)].copy()
+        # B. Renombrado Estándar (Vital hacerlo al principio)
+        mapa_columnas = {
+            "Fecha Venta": "Fecha", 
+            "Franquicia": "Nombre Franquicia", 
+            "Hora venta": "Hora",
+            "Cédula": "Documento",    
+            "Rif": "Documento",
+            "Nro. Doc": "Documento"
+        }
+        df_nuevo = df_nuevo.rename(columns=mapa_columnas)
+        
+        # C. Asegurar columnas críticas (Relleno de seguridad)
+        cols_check = ["Paquete/Servicio", "Vendedor", "N° Abonado", "Cliente", "Estatus", "Documento"]
+        for col in cols_check:
+            if col not in df_nuevo.columns:
+                df_nuevo[col] = "" 
 
-    # Extracción: Oficina del nombre del vendedor
-    patron_oficina = r'.*(?:OFICINA|OFIC|OFI)\s+(.*)$'
-    df["Oficina"] = df["Vendedor"].str.extract(patron_oficina)[0].str.strip()
+        # D. Transformaciones de Texto
+        df_nuevo["Paquete/Servicio"] = df_nuevo["Paquete/Servicio"].astype(str).str.upper()
+        df_nuevo["Vendedor"] = df_nuevo["Vendedor"].astype(str).str.upper().str.strip()
+        
+        # E. Filtros (Fibex Play y Calle)
+        df_nuevo = df_nuevo[~df_nuevo["Paquete/Servicio"].str.contains("FIBEX PLAY|FIBEXPLAY", na=False, regex=True)].copy()
+        df_nuevo = df_nuevo[~df_nuevo["Vendedor"].str.contains("VENTAS CALLE|AGENTE", regex=True, na=False)].copy()
 
-    # Conversión de Fecha (Fundamental para Power BI)
-    df["Fecha"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors="coerce")
+        # F. Etiquetado y Extracción
+        df_nuevo["Tipo de afluencia"] = "Ventas"
+        
+        # Regex para Oficina
+        patron_oficina = r'.*(?:OFICINA|OFIC|OFI)\s+(.*)$'
+        df_nuevo["Oficina"] = df_nuevo["Vendedor"].str.extract(patron_oficina)[0].str.strip()
 
-    # ==========================================
-    # 4. DEDUPLICACIÓN (SOLICITADA)
-    # ==========================================
-    # Eliminamos filas que sean idénticas en estas 5 columnas clave
-    subset_dedup = ["N° Abonado", "Documento", "Hora", "Fecha", "Vendedor"]
-    
-    df = df.drop_duplicates(subset=subset_dedup)
+        # G. Conversión de Fecha
+        df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce")
 
-    # ==========================================
-    # 5. SELECCIÓN FINAL Y GUARDADO
-    # ==========================================
-    cols_finales = [
-        "N° Abonado", "Documento", "Estatus", "Fecha", "Vendedor", 
-        "Costo", "Grupo Afinidad", "Nombre Franquicia", "Ciudad", 
-        "Hora", "Tipo de afluencia", "Oficina"
-    ]
+        # H. Selección de Columnas Finales (Antes de unir)
+        cols_finales = [
+            "N° Abonado", "Documento", "Estatus", "Fecha", "Vendedor", 
+            "Costo", "Grupo Afinidad", "Nombre Franquicia", "Ciudad", 
+            "Hora", "Tipo de afluencia", "Oficina"
+        ]
+        # Usamos reindex para que si falta alguna columna (ej. Costo), se cree con NaN
+        df_nuevo = df_nuevo.reindex(columns=cols_finales)
 
-    df_final = df.reindex(columns=cols_finales)
-    
-    utils.guardar_parquet(df_final, "Ventas_Estatus_Gold.parquet", filas_iniciales=filas_raw)
+    # 4. FUSIÓN Y DEDUPLICACIÓN
+    df_final = pd.DataFrame()
+
+    # Unir
+    if not df_historico.empty and not df_nuevo.empty:
+        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+    elif not df_nuevo.empty:
+        df_final = df_nuevo
+    else:
+        df_final = df_historico
+
+    if not df_final.empty:
+        filas_antes = len(df_final)
+        
+        # Deduplicación (Sobre todo el conjunto por seguridad)
+        subset_dedup = ["N° Abonado", "Documento", "Hora", "Fecha", "Vendedor"]
+        
+        # Eliminamos filas idénticas, manteniendo la última (la más reciente cargada)
+        df_final = df_final.drop_duplicates(subset=subset_dedup, keep='last')
+
+        # 5. GUARDADO
+        utils.guardar_parquet(
+            df_final, 
+            NOMBRE_GOLD, 
+            filas_iniciales=filas_antes,
+            ruta_destino=PATHS.get("gold", "data/gold")
+        )
+
+if __name__ == "__main__":
+    ejecutar()

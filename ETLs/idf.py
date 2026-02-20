@@ -3,7 +3,6 @@ import numpy as np
 import sys
 import os
 import glob
-import re
 import datetime
 
 # --- CONFIGURACIÓN DE RUTAS ---
@@ -12,10 +11,16 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import guardar_parquet, reportar_tiempo, console, limpiar_nulos_powerbi
+from utils import (
+    guardar_parquet, 
+    reportar_tiempo, 
+    console, 
+    limpiar_nulos_powerbi, 
+    obtener_rango_fechas
+)
 
 # ==========================================
-# CONSTANTES DE NEGOCIO
+# CONSTANTES DE NEGOCIO (IDF)
 # ==========================================
 NOC_USERS = [
     "GFARFAN", "JVELASQUEZ", "JOLUGO", "KUSEA", "SLOPEZ",
@@ -29,191 +34,160 @@ EXCLUIR_SOLUCIONES = [
     "LLAMADAS DE AGENDAMIENTO", "ORDEN REPETIDA"
 ]
 
-# Columnas para el reporte final
-COLS_EXTRACCION = [
+# Columnas que queremos en el detalle (Silver)
+COLS_IDF_SILVER = [
     "Quincena Evaluada", "FechaInicio", "FechaFin",
-    "N° Contrato", "Estatus contrato", "N° Orden", "Estatus_orden",
-    "Fecha Creacion", "Fecha Impresion", "Fecha Finalizacion", 
-    "Grupo Afinidad", "Detalle Orden", "Franquicia",
-    "Grupo Trabajo", "Usuario Final", "Solucion Aplicada", "Clasificacion"
+    "N° Contrato", "N° Orden", 
+    "Fecha Creacion", "Fecha Finalizacion", 
+    "Franquicia", "Grupo Trabajo", "Usuario Final",
+    "Solucion Aplicada", "Detalle Orden", 
+    "Clasificacion", "Es_Falla" # Columna calculada
 ]
 
 # ==========================================
-# 1. FUNCIONES UTILITARIAS
+# FUNCIONES LOCALES
 # ==========================================
-def obtener_rango_fechas(nombre_archivo):
-    """
-    Extrae fechas del nombre del archivo y genera la etiqueta de quincena.
-    """
-    try:
-        nombre_limpio = os.path.basename(nombre_archivo).lower()
-        patron = r"(\d{1,2}-\d{1,2}-\d{4})\s+al\s+(\d{1,2}-\d{1,2}-\d{4})"
-        match = re.search(patron, nombre_limpio)
-        
-        if not match: return None, None, None
-
-        str_inicio, str_fin = match.groups()
-        f_inicio = datetime.datetime.strptime(str_inicio, "%d-%m-%Y")
-        f_fin = datetime.datetime.strptime(str_fin, "%d-%m-%Y")
-
-        quincena_str = "Q1" if f_fin.day <= 15 else "Q2"
-        meses = ["", "ENE", "FEB", "MAR", "ABR", "MAY", "JUN", 
-                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
-        nombre_etiqueta = f"{meses[f_fin.month]} {f_fin.year} {quincena_str}"
-        
-        return f_inicio, f_fin, nombre_etiqueta
-
-    except Exception as e:
-        console.print(f"[red]❌ Error interpretando fechas en {nombre_archivo}: {e}[/]")
-        return None, None, None
-
 def limpiar_fechas_mixtas(series):
-    """
-    Función maestra para limpiar fechas sucias (mezcla de texto y números seriales).
-    """
-    # 1. Si ya es fecha, no tocar
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-
-    # 2. Intentar convertir seriales numéricos de Excel
+    if pd.api.types.is_datetime64_any_dtype(series): return series
     series_nums = pd.to_numeric(series, errors='coerce')
     mask_es_serial = (series_nums > 35000) & (series_nums < 60000)
-    
     fechas_excel = pd.to_datetime(series_nums[mask_es_serial], unit='D', origin='1899-12-30')
-    
-    # 3. El resto tratar como texto
     resto = series[~mask_es_serial].astype(str).str.strip()
     fechas_texto = pd.to_datetime(resto, dayfirst=True, errors='coerce')
-    
-    # 4. Combinar
     return fechas_excel.combine_first(fechas_texto)
 
 # =============================================================================
-# 2. PIPELINE PRINCIPAL
+# PIPELINE PRINCIPAL (IDF)
 # =============================================================================
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]PIPELINE: ÍNDICE DE FALLA (IdF) - GOLD EDITION[/]")
+    console.rule("[bold magenta]PIPELINE: ÍNDICE DE FALLA (SILVER & GOLD)[/]")
 
-    # 1. Validar Ruta
     ruta_origen = PATHS.get("raw_idf")
+    ruta_silver = PATHS.get("silver")
+    ruta_gold   = PATHS.get("gold")
+
     if not ruta_origen or not os.path.exists(ruta_origen):
-        console.print(f"[red]❌ Error: La ruta 'raw_idf' no existe o no está en config.py[/]")
+        console.print(f"[red]❌ Error: Ruta 'raw_idf' no existe[/]")
         return
 
-    # 2. Listar Archivos
     archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
-    console.print(f"📂 Se encontraron {len(archivos)} archivos. Iniciando procesamiento...")
+    console.print(f"📂 Procesando {len(archivos)} archivos de fallas...")
 
     dataframes_procesados = []
 
-    # 3. Procesamiento Iterativo
     for archivo in archivos:
         nombre_archivo = os.path.basename(archivo)
-
-        # --- A. Filtros Básicos ---
-        if nombre_archivo.startswith("~$") or "Consolidado" in nombre_archivo:
-            continue
+        if nombre_archivo.startswith("~$") or "Consolidado" in nombre_archivo: continue
         
-        # --- B. Metadatos ---
+        # 1. Obtener Fechas (Usando utils)
         fecha_inicio, fecha_fin, quincena_nombre = obtener_rango_fechas(nombre_archivo)
-        if not fecha_inicio:
-            console.print(f"[dim yellow]⚠️ Saltando {nombre_archivo} (Sin fechas válidas)[/]")
-            continue
+        if not fecha_inicio: continue
 
         try:
-            # --- C. LECTURA (Detectando tipos nativos) ---
             df = pd.read_excel(archivo, engine="calamine")
-            
             if df.empty: continue
 
-            # --- D. CORRECCIÓN DE FECHAS ---
-            cols_fecha = ["Fecha Creacion", "Fecha Emisión", "Fecha Final", 
-                          "Fecha Impresion", "Fecha Cierre", "Fecha Finalizacion"]
+            # 2. Limpieza de Fechas
+            cols_fecha = ["Fecha Creacion", "Fecha Finalizacion"]
             for col in cols_fecha:
-                if col in df.columns:
-                    df[col] = limpiar_fechas_mixtas(df[col])
+                if col in df.columns: df[col] = limpiar_fechas_mixtas(df[col])
 
-            # --- E. FILTROS ESTRICTOS (Igual que SLA) ---
+            # 3. FILTROS DE TIEMPO (Crítico para IDF)
             if "Fecha Finalizacion" not in df.columns or "Fecha Creacion" not in df.columns:
-                console.print(f"[red]❌ {nombre_archivo} falta columnas críticas.[/]")
+                console.print(f"[red]⚠️ {nombre_archivo} sin columnas de fecha.[/]")
                 continue
 
-            # 1. Regla: Cerrado dentro del rango del archivo
+            # Regla A: El ticket se cerró en esta quincena
             mask_cierre = (df["Fecha Finalizacion"] >= fecha_inicio) & (df["Fecha Finalizacion"] <= fecha_fin)
-            
-            # 2. Regla: Creado a partir del inicio del archivo (Elimina backlog viejo)
+            # Regla B: El ticket se creó DENTRO de esta quincena (No traemos backlog viejo)
             mask_creacion = df["Fecha Creacion"] >= fecha_inicio
+            
+            df = df[mask_cierre & mask_creacion].copy()
+            if df.empty: continue
 
-            # Aplicar filtros
-            df_filtrado = df[mask_cierre & mask_creacion].copy()
-
-            # Auditoría rápida
-            eliminados = len(df[mask_cierre]) - len(df_filtrado)
-            if eliminados > 0:
-                console.print(f"   [dim yellow]✂️ Se eliminaron {eliminados} tickets antiguos (creados antes del {fecha_inicio.date()})[/]")
-
-            if len(df_filtrado) == 0:
-                console.print(f"[yellow]⚠️ {nombre_archivo}: 0 filas tras filtros.[/]")
-                continue
-
-            # --- F. ENRIQUECIMIENTO ---
-            df_filtrado = df_filtrado.assign(
-                FechaInicio = fecha_inicio,
-                FechaFin = fecha_fin,
-                Quincena_Evaluada = quincena_nombre
+            # 4. Normalización
+            df = df.assign(
+                Solucion_Norm = lambda x: x["Solucion Aplicada"].fillna("").astype(str).str.upper() if "Solucion Aplicada" in x else "",
+                Grupo_Norm    = lambda x: x["Grupo Trabajo"].fillna("").astype(str).str.upper() if "Grupo Trabajo" in x else "",
+                Detalle_Norm  = lambda x: x["Detalle Orden"].fillna("").astype(str).str.upper() if "Detalle Orden" in x else "",
+                Usuario_Norm  = lambda x: x["Usuario Final"].fillna("").astype(str).str.upper() if "Usuario Final" in x else "",
+                Franquicia    = lambda x: x["Franquicia"].fillna("NO DEFINIDA").astype(str).str.strip().str.upper() if "Franquicia" in x else "NO DEFINIDA",
+                FechaInicio   = fecha_inicio,
+                FechaFin      = fecha_fin,
+                Quincena_Evaluada = quincena_nombre,
+                Es_Falla      = 1 # Marcador para sumar luego
             ).rename(columns={"Quincena_Evaluada": "Quincena Evaluada"})
 
-            # --- G. LIMPIEZA DE NEGOCIO ---
-            df_filtrado = df_filtrado.assign(
-                Solucion_Norm = lambda x: x["Solucion Aplicada"].fillna("").astype(str).str.upper(),
-                Grupo_Norm    = lambda x: x["Grupo Trabajo"].fillna("").astype(str).str.upper(),
-                Detalle_Norm  = lambda x: x["Detalle Orden"].fillna("").astype(str).str.upper(),
-                Estatus_Norm  = lambda x: x["Estatus_orden"].fillna("").astype(str).str.upper(),
-                Usuario_Norm  = lambda x: x["Usuario Final"].fillna("").astype(str).str.upper()
-            )
-            
-            # Clasificación NOC / MESA / OPERACIONES (Crucial para IdF también)
+            # 5. Clasificación (NOC vs MESA vs OPERACIONES)
             condiciones = [
-                df_filtrado['Usuario_Norm'].isin(NOC_USERS),
-                df_filtrado['Grupo_Norm'].isin(NOC_USERS),
-                df_filtrado['Usuario_Norm'].str.contains('NOC', na=False),
-                df_filtrado['Grupo_Norm'].str.contains('OPERACIONES', na=False)
+                df['Usuario_Norm'].isin(NOC_USERS),
+                df['Grupo_Norm'].isin(NOC_USERS),
+                df['Usuario_Norm'].str.contains('NOC', na=False),
+                df['Grupo_Norm'].str.contains('OPERACIONES', na=False)
             ]
             opciones = ['NOC', 'NOC', 'NOC', 'OPERACIONES']
-            df_filtrado['Clasificacion'] = np.select(condiciones, opciones, default='MESA DE CONTROL')
+            df['Clasificacion'] = np.select(condiciones, opciones, default='MESA DE CONTROL')
 
-            # Filtros de exclusión
+            # 6. Filtros de Exclusión (Basura operativa)
             mask_excluir = (
-                df_filtrado["Solucion_Norm"].isin(EXCLUIR_SOLUCIONES) |
-                df_filtrado["Grupo_Norm"].str.contains("GT API FIBEX", na=False) |
-                (df_filtrado["Detalle_Norm"] == "PRUEBA DE INTERNET") |
-                df_filtrado["Estatus_Norm"].str.contains("CREACIÓN", na=False)
+                df["Solucion_Norm"].isin(EXCLUIR_SOLUCIONES) |
+                df["Grupo_Norm"].str.contains("GT API FIBEX", na=False) |
+                (df["Detalle_Norm"] == "PRUEBA DE INTERNET")
             )
-            
-            df_final = df_filtrado[~mask_excluir].reindex(columns=COLS_EXTRACCION)
-            dataframes_procesados.append(df_final)
+            df_limpio = df[~mask_excluir].copy()
 
-            console.print(f"   ✅ {nombre_archivo} -> [cyan]{quincena_nombre}[/]: {len(df_final)} filas OK")
+            # Selección columnas Silver
+            cols_existentes = [c for c in COLS_IDF_SILVER if c in df_limpio.columns]
+            dataframes_procesados.append(df_limpio[cols_existentes])
+
+            console.print(f"   ✅ {nombre_archivo} -> {quincena_nombre}: {len(df_limpio)} fallas")
 
         except Exception as e:
-            console.print(f"   ❌ Error procesando {nombre_archivo}: {e}")
+            console.print(f"   ❌ Error en {nombre_archivo}: {e}")
 
-    # 4. Consolidación
-    if dataframes_procesados:
-        console.print(f"\n🔄 Consolidando {len(dataframes_procesados)} DataFrames de IdF...")
-        df_total = pd.concat(dataframes_procesados, ignore_index=True)
-        
-        # Limpieza final
-        df_total = df_total.drop_duplicates()
-        df_total = limpiar_nulos_powerbi(df_total)
-        
-        # 5. Guardado
-        output_file = "IdF_Gold.parquet"
-        guardar_parquet(df_total, output_file, filas_iniciales=len(df_total))
-        console.print(f"[bold green]✨ Proceso Finalizado. Archivo guardado: {output_file}[/]")
-    else:
-        console.print("[yellow]⚠️ No se generaron datos. Revisa si los nombres de archivo coinciden con el formato esperado.[/]")
+    if not dataframes_procesados:
+        console.print("[yellow]⚠️ No se encontraron tickets de falla válidos.[/]")
+        return
+
+    # ---------------------------------------------------------------------
+    # CAPA SILVER (DETALLE DE FALLAS)
+    # ---------------------------------------------------------------------
+    console.rule("[cyan]GENERANDO IDF SILVER (DETALLE)[/]")
+    
+    df_silver = pd.concat(dataframes_procesados, ignore_index=True)
+    df_silver = df_silver.drop_duplicates()
+    df_silver = limpiar_nulos_powerbi(df_silver)
+    
+    guardar_parquet(
+        df=df_silver, 
+        nombre_archivo="IDF_Fallas_Silver_Detalle.parquet",
+        filas_iniciales=len(df_silver),
+        ruta_destino=ruta_silver
+    )
+
+    # ---------------------------------------------------------------------
+    # CAPA GOLD (RESUMEN POR FRANQUICIA)
+    # ---------------------------------------------------------------------
+    console.rule("[gold3]GENERANDO IDF GOLD (RESUMEN)[/]")
+    
+    # Agrupamos fallas por Quincena y Franquicia
+    df_gold = df_silver.groupby(
+        ["Quincena Evaluada", "Franquicia"], 
+        as_index=False
+    ).agg(
+        Total_Fallas=("Es_Falla", "sum"),     # Suma de tickets
+        Fecha_Corte=("FechaFin", "max")
+    )
+    
+    df_gold = df_gold.sort_values(by=["Quincena Evaluada", "Franquicia"])
+
+    guardar_parquet(
+        df=df_gold, 
+        nombre_archivo="IDF_Fallas_Gold_Resumen.parquet", 
+        filas_iniciales=len(df_gold),
+        ruta_destino=ruta_gold
+    )
 
 if __name__ == "__main__":
     ejecutar()

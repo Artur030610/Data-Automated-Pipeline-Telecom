@@ -1,84 +1,145 @@
 import pandas as pd
 import os
+import sys
+
+# --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 from config import PATHS
 from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 
 @reportar_tiempo
-def ejecutar(ruta_silver): 
-    console.rule("[bold yellow]5. ETL GOLD: NORMALIZACIÓN DE OFICINAS[/]")
+def ejecutar(ruta_silver=None): 
+    console.rule("[bold yellow]5. ETL GOLD: NORMALIZACIÓN DE OFICINAS (INCREMENTAL)[/]")
 
-    if not ruta_silver or not os.path.exists(ruta_silver):
-        console.print("[red]❌ No se recibió una ruta Silver válida.[/]")
+    # 1. Configuración de Rutas
+    if not ruta_silver:
+        ruta_silver = os.path.join(PATHS["silver"], "Afluencia_Consolidada_Silver.parquet")
+
+    if not os.path.exists(ruta_silver):
+        console.print("[red]❌ No se encontró el archivo Silver origen (Afluencia_Consolidada).[/]")
         return
 
-    with Progress(
-        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-        BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(), console=console
-    ) as progress:
+    NOMBRE_GOLD = "Afluencia_Gold.parquet"
+    RUTA_GOLD = os.path.join(PATHS["gold"], NOMBRE_GOLD)
 
-        # --- TAREA 1: CARGA ---
-        task1 = progress.add_task("[cyan]Cargando Silver Enriquecida...", total=1)
-        df = pd.read_parquet(ruta_silver)
-        progress.update(task1, advance=1)
+    # -------------------------------------------------------------------------
+    # 2. LÓGICA INCREMENTAL (DETECTAR QUÉ ES NUEVO)
+    # -------------------------------------------------------------------------
+    fecha_corte = None
+    df_historico = pd.DataFrame()
 
-        # --- TAREA 2: NORMALIZACIÓN CON DIMENSION ---
-        task2 = progress.add_task("[blue]Aplicando Dim Oficinas...", total=1)
+    if os.path.exists(RUTA_GOLD):
+        try:
+            # Leemos solo la columna fecha para ser rápidos
+            df_fechas = pd.read_parquet(RUTA_GOLD, columns=["Fecha"])
+            if not df_fechas.empty:
+                fecha_corte = pd.to_datetime(df_fechas["Fecha"]).max()
+                console.print(f"[green]✅ Última fecha cargada en Gold: {fecha_corte.date()}[/]")
+            
+            # Cargamos el histórico para unirlo al final
+            df_historico = pd.read_parquet(RUTA_GOLD)
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Error leyendo Gold existente ({e}). Se hará carga completa.[/]")
+
+    # -------------------------------------------------------------------------
+    # 3. LECTURA Y FILTRADO DEL SILVER
+    # -------------------------------------------------------------------------
+    try:
+        df_silver = pd.read_parquet(ruta_silver)
         
-        path_map = os.path.join(PATHS["silver"], "Dim Oficinas.csv")
+        # Aseguramos formato fecha
+        if "Fecha" in df_silver.columns:
+            df_silver["Fecha"] = pd.to_datetime(df_silver["Fecha"], dayfirst=True, errors="coerce")
         
-        if os.path.exists(path_map):
-            try:
-                # Intentamos leer con latin-1 (común en excels guardados como CSV)
+        if fecha_corte:
+            # Filtramos solo lo que sea POSTERIOR a lo que ya tenemos
+            mask_nuevo = df_silver["Fecha"] > fecha_corte
+            df_nuevo = df_silver[mask_nuevo].copy()
+            
+            if df_nuevo.empty:
+                console.print("[bold green]✅ El Gold está al día. No hay registros nuevos por normalizar.[/]")
+                return # Salimos temprano
+            
+            console.print(f"[cyan]🚀 Procesando {len(df_nuevo)} registros nuevos...[/]")
+        else:
+            # Si no hay histórico, tomamos todo
+            df_nuevo = df_silver.copy()
+            console.print(f"[cyan]🚀 Iniciando carga completa ({len(df_nuevo)} registros)...[/]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Error leyendo archivo Silver: {e}[/]")
+        return
+
+    # -------------------------------------------------------------------------
+    # 4. NORMALIZACIÓN (SOLO A LO NUEVO)
+    # -------------------------------------------------------------------------
+    path_map = os.path.join(PATHS["silver"], "Dim Oficinas.csv")
+    
+    if os.path.exists(path_map) and not df_nuevo.empty:
+        try:
+            with console.status("[blue]Aplicando Dim Oficinas a nuevos registros...[/]"):
+                # Carga del Diccionario
                 df_map = pd.read_csv(path_map, sep=',', encoding='latin-1')
                 
-                # --- AQUÍ ESTÁ EL BLINDAJE (SIN CAMBIAR LÓGICA) ---
-                # 1. Limpiamos nombres de columnas (quita espacios en cabeceras)
+                # Blindaje de columnas y datos del mapa
                 df_map.columns = df_map.columns.astype(str).str.strip()
-                
-                # 2. Estandarizamos la llave del CSV (Mayúsculas y sin espacios extra)
-                # Esto arregla "RATTAN PLAZA " vs "RATTAN PLAZA"
                 df_map['Input_Original'] = df_map['Input_Original'].astype(str).str.upper().str.strip()
                 
-                # Crear diccionarios
+                # Creación de diccionarios
                 dict_nom = dict(zip(df_map['Input_Original'], df_map['Nombre_Normalizado_Final']))
                 dict_est = dict(zip(df_map['Input_Original'], df_map['Estado'])) if 'Estado' in df_map.columns else {}
                 dict_tip = dict(zip(df_map['Input_Original'], df_map['Tipo_Sede'])) if 'Tipo_Sede' in df_map.columns else {}
                 
-                # Columna clave del Dataframe (Data Sucia)
-                # Aplicamos la MISMA limpieza: Mayúsculas y strip
-                col_k = df['Oficina'].fillna('').astype(str).str.upper().str.strip()
+                # Normalización de la Data Nueva
+                col_k = df_nuevo['Oficina'].fillna('').astype(str).str.upper().str.strip()
                 
-                # Mapeo: Busca la clave limpia en el diccionario limpio
-                df['Oficina_Normalizada'] = col_k.map(dict_nom).fillna(df['Oficina'])
-                
-                # Sobrescribimos la columna Oficina (Tu requerimiento)
-                df['Oficina'] = df['Oficina_Normalizada']
+                # Mapeo
+                df_nuevo['Oficina_Normalizada'] = col_k.map(dict_nom).fillna(df_nuevo['Oficina'])
+                df_nuevo['Oficina'] = df_nuevo['Oficina_Normalizada']
                 
                 # Enriquecimiento
-                df['Estado_Sede'] = col_k.map(dict_est).fillna('Sin Asignar')
-                df['Tipo_Sede'] = col_k.map(dict_tip).fillna('Sin Asignar')
+                df_nuevo['Estado_Sede'] = col_k.map(dict_est).fillna('Sin Asignar')
+                df_nuevo['Tipo_Sede'] = col_k.map(dict_tip).fillna('Sin Asignar')
                 
-                df.drop(columns=['Oficina_Normalizada'], inplace=True)
-                console.print("[green]✔ Normalización aplicada exitosamente.[/]")
+                df_nuevo.drop(columns=['Oficina_Normalizada'], inplace=True)
                 
-            except Exception as e:
-                console.print(f"[red]❌ Error aplicando Dim Oficinas: {e}[/]")
-        else:
-            console.print("[yellow]⚠ No se encontró 'Dim Oficinas.csv'. Se mantienen nombres técnicos.[/]")
+                # Auditoría (Solo mostramos las NUEVAS que faltan)
+                sin_norm = df_nuevo[df_nuevo['Estado_Sede'] == 'Sin Asignar']['Oficina'].unique()
+                sin_norm_reales = [x for x in sin_norm if str(x).upper() not in ['NONE', 'SIN ASIGNAR', 'NAN', '', 'NONE']]
+                
+                if sin_norm_reales:
+                    console.print(f"[yellow]⚠ Atención: {len(sin_norm_reales)} oficinas NUEVAS no están en el CSV:[/]")
+                    console.print(sin_norm_reales[:10])
 
-        progress.update(task2, advance=1)
-        df = df.drop_duplicates()
-        df = limpiar_nulos_powerbi(df)
-        # --- GUARDADO ---
-        guardar_parquet(df, "Afluencia_Gold.parquet", filas_iniciales=len(df))
-        
-        # Reporte final para auditoría
-        sin_norm = df[df['Estado_Sede'] == 'Sin Asignar']['Oficina'].unique()
-        # Filtramos 'None' y vacíos para no ensuciar el log
-        sin_norm_reales = [x for x in sin_norm if str(x).upper() not in ['NONE', 'SIN ASIGNAR', 'NAN', '']]
-        
-        if len(sin_norm_reales) > 0:
-             console.print(f"[yellow]⚠ Oficinas que quedaron sin normalizar (Faltan en el CSV):[/]")
-             console.print(sin_norm_reales[:20]) # Muestra máximo 20 para no llenar la pantalla
+        except Exception as e:
+            console.print(f"[red]❌ Error aplicando Dim Oficinas: {e}[/]")
+    else:
+        if not df_nuevo.empty: 
+            console.print("[yellow]⚠ No se encontró 'Dim Oficinas.csv'. Se saltó la normalización.[/]")
+
+    # -------------------------------------------------------------------------
+    # 5. UNIFICACIÓN Y GUARDADO
+    # -------------------------------------------------------------------------
+    df_nuevo = limpiar_nulos_powerbi(df_nuevo)
+    
+    df_final = pd.DataFrame()
+    
+    if not df_historico.empty:
+        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+        # Deduplicación de seguridad (Keep Last = Prioriza la data nueva si hubo corrección)
+        subset_cols = [c for c in ["N° Abonado", "Fecha", "Hora", "Vendedor", "Oficina"] if c in df_final.columns]
+        df_final = df_final.drop_duplicates(subset=subset_cols, keep='last')
+    else:
+        df_final = df_nuevo
+
+    if not df_final.empty:
+        guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final))
+    else:
+        console.print("[yellow]⚠️ Resultado vacío (Revisar flujo anterior).[/]")
+
+if __name__ == "__main__":
+    ejecutar()

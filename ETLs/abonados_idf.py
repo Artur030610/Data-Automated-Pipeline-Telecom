@@ -1,124 +1,225 @@
 import pandas as pd
-import os
 import sys
+import os
+import glob
+import re
+import datetime
 import calendar
-from datetime import timedelta
+import gc
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-# --- EL TRUCO DEL ASCENSOR ---
+# --- CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
-# -----------------------------
 
-from config import PATHS, MAPA_MESES
+from config import PATHS
 from utils import (
     guardar_parquet, 
     reportar_tiempo, 
     console, 
-    leer_carpeta, 
     limpiar_nulos_powerbi
 )
 
-def normalizar_quincena(fecha_archivo):
-    """
-    Recibe la fecha real del archivo y la asigna a la Quincena Estándar (Q1 o Q2).
-    Lógica de negocio:
-    - Día 01-05: Pertenece al cierre del mes ANTERIOR (Q2).
-    - Día 06-20: Pertenece a la quincena del mes ACTUAL (Q1 -> Día 15).
-    - Día 21-31: Pertenece al cierre del mes ACTUAL (Q2 -> Último día).
-    """
-    if pd.isnull(fecha_archivo):
-        return pd.NaT
+# --- CONFIGURACIÓN GLOBAL ---
+MAPEO_COLUMNAS = {
+    "Nombre Franquicia": "Franquicia",
+    "Franquicia": "Franquicia",
+    
+    # --- CAMBIO: AHORA MAPEAMOS EL ID ---
+    "ID": "ID",
+    "Id": "ID",
+    "id": "ID",
+    "ID_CLIENTE": "ID",
+    
+    "Estatus contrato": "Estatus contrato",
+    "Estatus": "Estatus contrato"
+}
 
-    dia = fecha_archivo.day
-    mes = fecha_archivo.month
-    anio = fecha_archivo.year
+COLS_ABONADOS_SILVER = [
+    "Quincena Evaluada", "FechaInicio", "FechaFin",
+    "ID", "Estatus contrato",  # <--- CAMBIO AQUÍ
+    "Franquicia" 
+]
 
-    # CASO 1: Inicios de mes (ej: 02-01-2025 -> Pertenece a Dic 2024)
-    if dia <= 5:
-        # Restamos días para caer en el mes anterior
-        fecha_target = fecha_archivo.replace(day=1) - timedelta(days=1)
-        # Ya estamos en el fin de mes anterior, listo.
-        return fecha_target
+# --- REGEX FLEXIBLE ---
+PATRON_FECHA = re.compile(r"hasta el.*?(\d{1,2}\W\d{1,2}\W\d{4})", re.IGNORECASE)
 
-    # CASO 2: Primera Quincena (ej: 12-11, 17-12 -> Pertenece al 15)
-    elif dia <= 20:
-        return fecha_archivo.replace(day=15)
+# ==========================================
+# LÓGICA DE NEGOCIO (FECHAS SNAPSHOT)
+# ==========================================
+def obtener_fecha_corte_snapshot(nombre_archivo):
+    try:
+        nombre_limpio = os.path.basename(nombre_archivo).lower()
+        match = PATRON_FECHA.search(nombre_limpio)
+        
+        if not match: 
+            return None, None, None
+        
+        # Normalizar separadores
+        fecha_str = re.sub(r"\W", "-", match.group(1))
+        
+        fecha_archivo = pd.to_datetime(fecha_str, format="%d-%m-%Y")
+        
+        dia = fecha_archivo.day
+        mes = fecha_archivo.month
+        anio = fecha_archivo.year
+        
+        # --- LÓGICA DE CIERRE DE QUINCENA ---
+        if dia <= 5:
+            fecha_target = fecha_archivo.replace(day=1) - datetime.timedelta(days=1)
+            quincena_str = "Q2"
+        elif dia <= 20:
+            fecha_target = fecha_archivo.replace(day=15)
+            quincena_str = "Q1"
+        else:
+            ultimo_dia = calendar.monthrange(anio, mes)[1]
+            fecha_target = fecha_archivo.replace(day=ultimo_dia)
+            quincena_str = "Q2"
 
-    # CASO 3: Cierre de Mes (ej: 30-11, 31-10 -> Pertenece al fin de mes actual)
-    else:
-        # Calculamos el último día del mes actual
-        ultimo_dia = calendar.monthrange(anio, mes)[1]
-        return fecha_archivo.replace(day=ultimo_dia)
+        meses = ["", "ENE", "FEB", "MAR", "ABR", "MAY", "JUN", 
+                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
+        
+        nombre_etiqueta = f"{meses[fecha_target.month]} {fecha_target.year} {quincena_str}"
+        
+        return fecha_target, fecha_target, nombre_etiqueta
 
+    except Exception as e:
+        console.print(f"[red]Error calc fecha: {e}[/]")
+        return None, None, None
+
+# ==========================================
+# WORKER: PROCESAR UN SOLO ARCHIVO
+# ==========================================
+def procesar_archivo_worker(ruta_completa):
+    nombre_archivo = os.path.basename(ruta_completa)
+    
+    fecha_inicio, fecha_fin, quincena_nombre = obtener_fecha_corte_snapshot(nombre_archivo)
+    
+    if not fecha_inicio:
+        return False, f"[yellow]⚠️ Sin fecha válida (Regex): {nombre_archivo}[/]", None
+
+    try:
+        # LECTURA
+        df = pd.read_excel(ruta_completa, engine="calamine")
+        
+        if df.empty: 
+            return False, f"[dim]⚠️ Archivo vacío: {nombre_archivo}[/]", None
+
+        # 1. Limpieza de columnas
+        df.columns = df.columns.astype(str).str.strip()
+        df = df.rename(columns=MAPEO_COLUMNAS)
+
+        if "Franquicia" not in df.columns:
+            return False, f"[red]❌ Falta columna Franquicia: {nombre_archivo}[/]", None
+
+        # 2. Transformación y Selección
+        df_small = pd.DataFrame()
+        
+        # --- CAMBIO IMPORTANTE: Usamos ID en lugar de Contrato ---
+        if "ID" in df.columns:
+            df_small["ID"] = df["ID"]
+        else:
+            # Fallback por si acaso algún archivo viejo usa otro nombre
+            # Pero llenará nulos si no existe ID, lo cual es correcto si queremos ID
+            df_small["ID"] = None 
+            
+        df_small["Estatus contrato"] = df["Estatus contrato"] if "Estatus contrato" in df.columns else None
+        
+        # Limpieza Franquicia
+        df_small["Franquicia"] = df["Franquicia"].fillna("NO DEFINIDA").astype(str).str.strip().str.upper()
+        
+        # Columnas calculadas
+        df_small["Quincena Evaluada"] = quincena_nombre
+        df_small["FechaInicio"] = fecha_inicio
+        df_small["FechaFin"] = fecha_fin
+
+        # Filtro pruebas
+        col_detalle = next((c for c in ["Detalle Orden", "Detalle"] if c in df.columns), None)
+        if col_detalle:
+            mask_pruebas = df[col_detalle] == "PRUEBA DE INTERNET"
+            df_small = df_small[~mask_pruebas]
+
+        # Liberamos memoria
+        del df
+        gc.collect()
+
+        # Filtrar solo columnas existentes del Silver
+        cols_finales = [c for c in COLS_ABONADOS_SILVER if c in df_small.columns]
+        df_final = df_small[cols_finales].copy()
+
+        return True, f"   ✅ {nombre_archivo} -> {quincena_nombre}", df_final
+
+    except Exception as e:
+        return False, f"[red]❌ Error crítico en {nombre_archivo}: {e}[/]", None
+
+# ==========================================
+# ORQUESTADOR PARALELO
+# ==========================================
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold cyan]PIPELINE: ABONADOS (ESTANDARIZADO POR QUINCENA)[/]")
+    console.rule("[bold cyan]PIPELINE: ABONADOS (SNAPSHOTS)[/]")
 
-    # 1. Definir Inputs
-    if "raw_abonados_idf" not in PATHS:
-        console.print("[red]❌ Error: Falta definir 'raw_abonados_idf' en config.py[/]")
+    # Intenta buscar en la ruta específica de abonados
+    ruta_origen = PATHS.get("raw_abonados_idf")
+    if not ruta_origen:
+        base_raw = PATHS.get("raw_idf")
+        if base_raw:
+             ruta_origen = os.path.join(os.path.dirname(base_raw), "2-Abonados")
+    
+    # HARDCODE TEMPORAL
+    if not ruta_origen or not os.path.exists(ruta_origen):
+        ruta_origen = r"C:\Users\josperez\Documents\A-DataStack\01-Proyectos\01-Data_PipelinesFibex\02_Data_Lake\raw_data\5-Indice de falla\2-Abonados"
+    
+    if not os.path.exists(ruta_origen):
+        console.print(f"[red]❌ Error: No se encuentra la ruta: {ruta_origen}[/]")
         return
 
-    cols_input = ["ID", "Franquicia"] 
+    ruta_silver = PATHS.get("silver")
+    ruta_gold   = PATHS.get("gold")
+
+    archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
+    archivos = [f for f in archivos if not os.path.basename(f).startswith("~$")]
     
-    # 2. Carga Masiva
-    df = leer_carpeta(
-        ruta_carpeta=PATHS["raw_abonados_idf"],
-        columnas_esperadas=cols_input,
-        dtype=str 
-    )
+    console.print(f"📂 Ruta: {ruta_origen}")
+    console.print(f"🚀 Iniciando procesamiento de {len(archivos)} archivos...")
+
+    dataframes_list = []
     
-    if df.empty:
-        console.print("[yellow]⚠️ No se cargaron datos de abonados.[/]")
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(procesar_archivo_worker, archivo): archivo for archivo in archivos}
+        
+        for future in as_completed(futures):
+            exito, mensaje, df_result = future.result()
+            console.print(mensaje)
+            
+            if exito and df_result is not None:
+                dataframes_list.append(df_result)
+                gc.collect()
+
+    if not dataframes_list:
+        console.print("[bold red]⛔ No se generaron datos.[/]")
         return
 
-    console.print("📅 Extrayendo y normalizando fechas...")
-
-    # 3. Extracción de Fecha "Cruda" del nombre del archivo
-    df["Fecha_Archivo_Str"] = df["Source.Name"].str.extract(r'(\d{1,2}-\d{1,2}-\d{4})', expand=False)
-    df["Fecha_Archivo"] = pd.to_datetime(df["Fecha_Archivo_Str"], format="%d-%m-%Y", errors="coerce")
+    # --- CONSOLIDACIÓN ---
+    console.print(f"\n🔄 Consolidando {len(dataframes_list)} DataFrames...")
     
-    df = df.dropna(subset=["Fecha_Archivo"]) # Eliminar archivos sin fecha
+    # SILVER
+    df_silver = pd.concat(dataframes_list, ignore_index=True)
+    df_silver = df_silver.drop_duplicates()
+    df_silver = limpiar_nulos_powerbi(df_silver)
 
-    # 4. APLICACIÓN DEL "IMÁN DE FECHAS" 🧲
-    # Aplicamos la función fila por fila (vectorizada en lo posible sería mejor, 
-    # pero apply es seguro para lógica de calendario compleja)
-    df["Fecha_Corte_Std"] = df["Fecha_Archivo"].apply(normalizar_quincena)
+    guardar_parquet(df_silver, "Stock_Abonados_Silver_Detalle.parquet", filas_iniciales=len(df_silver), ruta_destino=ruta_silver)
 
-    # Creamos columnas auxiliares para facilitar la lectura en Power BI
-    # Ejemplo: "2025-12-15" -> "DIC Q1"
-    # Ejemplo: "2025-12-31" -> "DIC Q2"
-    
-    # Función lambda auxiliar para etiqueta
-    df["Quincena_Label"] = df["Fecha_Corte_Std"].apply(
-        lambda x: "Q1" if x.day == 15 else "Q2"
+    # GOLD (Resumen por Franquicia y Quincena usando ID)
+    df_gold = df_silver.groupby(["Quincena Evaluada", "Franquicia"], as_index=False).agg(
+        Total_Abonados=("ID", "nunique"), # <--- AHORA CUENTA IDs ÚNICOS
+        Fecha_Corte=("FechaFin", "max")
     )
     
-    # Mapeo de meses usando tu diccionario global
-    df["Mes_Label"] = df["Fecha_Corte_Std"].dt.month.map(MAPA_MESES).str.upper().str[:3] # ENE, FEB
-    df["Periodo"] = df["Mes_Label"] + " " + df["Quincena_Label"] # "ENE Q1"
-
-    # 5. Agrupación (Ahora agrupamos por la FECHA ESTÁNDAR)
-    console.print("🔄 Agrupando por Franquicia y Fecha Estandarizada...")
+    guardar_parquet(df_gold, "Stock_Abonados_Gold_Resumen.parquet", filas_iniciales=len(df_gold), ruta_destino=ruta_gold)
     
-    df_agrupado = df.groupby(
-        ["Franquicia", "Fecha_Corte_Std", "Periodo"], 
-        as_index=False
-    )["ID"].nunique()
-    
-    df_agrupado.rename(columns={"ID": "Total_Abonados"}, inplace=True)
-
-    # 6. Limpieza Final
-    df_agrupado["Franquicia"] = df_agrupado["Franquicia"].str.upper().str.strip()
-    df_agrupado = limpiar_nulos_powerbi(df_agrupado)
-
-    # 7. Guardado
-    guardar_parquet(
-        df_agrupado, 
-        "Abonados_Resumen_IdF.parquet", 
-        filas_iniciales=len(df)
-    )
+    console.print(f"[bold green]✨ Proceso Finalizado. (Usando columna ID)[/]")
 
 if __name__ == "__main__":
     ejecutar()

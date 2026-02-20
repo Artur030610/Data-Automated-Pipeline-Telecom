@@ -1,6 +1,12 @@
 import duckdb
 import pandas as pd
 import os
+import sys
+# --- CONFIGURACIÓN DE RUTAS ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from config import PATHS
 from utils import leer_carpeta, reportar_tiempo, console
 

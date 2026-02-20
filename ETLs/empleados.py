@@ -1,14 +1,13 @@
 import pandas as pd
 import re
 import os
+import glob
 from datetime import datetime
 from config import PATHS
 from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
-from unidecode import unidecode
-from rich.table import Table
 
 # =============================================================================
-# 1. CONFIGURACIÓN DE FILTROS (ANTI-ROBOTS)
+# 1. CONFIGURACIÓN DE FILTROS (Mantenida)
 # =============================================================================
 KEYWORDS_NO_HUMANOS = [
     r'\bINTERCOM\b', r'\bINVERSIONES\b', r'\bSOLUCIONES\b', 
@@ -22,156 +21,130 @@ KEYWORDS_NO_HUMANOS = [
 PATRON_NO_HUMANO = re.compile('|'.join(KEYWORDS_NO_HUMANOS), re.IGNORECASE)
 
 # =============================================================================
-# 2. FUNCIONES AUXILIARES (LÓGICA DE FECHAS ROBUSTA)
+# 2. FUNCIONES AUXILIARES
 # =============================================================================
 def extraer_fecha_archivo(nombre_archivo):
-    """
-    Parsea fechas del nombre del archivo manejando longitudes variables.
-    Soporta: ddmmyyyy (8), dmyyyy (6), dmmyyyy (7), etc.
-    """
+    """ Parsea fechas del nombre del archivo (ddmmyyyy) """
     match = re.search(r'(\d{6,8})', str(nombre_archivo))
-    if not match:
-        return datetime.min
+    if not match: return datetime(1900, 1, 1)
 
     numeros = match.group(1)
-    
     try:
-        # El año siempre son los últimos 4 dígitos
         anio = int(numeros[-4:])
-        resto = numeros[:-4] # Lo que queda son dia y mes
-        
-        dia = 1
-        mes = 1
-        
-        # Lógica para desempatar días y meses de longitud variable
-        if len(resto) == 4:   # Ej: 0812 -> 08 y 12 (ddmm)
-            dia = int(resto[0:2])
-            mes = int(resto[2:4])
-        elif len(resto) == 2: # Ej: 61 -> 6 y 1 (dm)
-            dia = int(resto[0])
-            mes = int(resto[1])
-        elif len(resto) == 3: # El caso difícil: 161 o 712
-            # Si los primeros 2 dígitos son > 12, seguro es un día (ej. 161 -> Dia 16, Mes 1)
+        resto = numeros[:-4]
+        dia, mes = 1, 1
+        if len(resto) == 4:
+            dia, mes = int(resto[0:2]), int(resto[2:4])
+        elif len(resto) == 2:
+            dia, mes = int(resto[0]), int(resto[1])
+        elif len(resto) == 3:
             posible_dia = int(resto[0:2])
             if posible_dia > 12: 
-                 dia = posible_dia
-                 mes = int(resto[2])
+                 dia, mes = posible_dia, int(resto[2])
             else:
-                 # Asumimos formato dmm (ej 712 -> 7/12) o ddm (112 -> 11/2)
-                 # Ante la ambigüedad, priorizamos ddm si el dia es válido
-                 dia = int(resto[0:2])
-                 mes = int(resto[2])
-                 
+                 dia, mes = int(resto[0:2]), int(resto[2])
         return datetime(anio, mes, dia)
     except:
-        return datetime.min
+        return datetime(1900, 1, 1)
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]👤 ETL: MAESTRO DE EMPLEADOS (MULTIPLE UBICACIÓN - SCD)[/]")
+    console.rule("[bold magenta]👤 ETL: MAESTRO DE EMPLEADOS (INCREMENTAL SCD DINÁMICO)[/]")
 
-    ruta_carpeta = PATHS["raw_empleados"]
+    RUTA_RAW = PATHS["raw_empleados"]
+    NOMBRE_GOLD = "Maestro_Empleados_Gold.parquet"
+    # Buscamos la ruta en config, si no existe usamos una por defecto
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", ""), NOMBRE_GOLD)
 
-    # --- BLOQUE DE AUDITORÍA VISUAL (OPCIONAL PERO RECOMENDADO) ---
-    if os.path.exists(ruta_carpeta):
-        archivos = [f for f in os.listdir(ruta_carpeta) if f.endswith('xlsx') or f.endswith('xls')]
-        console.print(f"[cyan]ℹ️ Archivos encontrados en origen: {len(archivos)}[/]")
-    # -------------------------------------------------------------
+    # ---------------------------------------------------------
+    # 1. DETECCIÓN INCREMENTAL
+    # ---------------------------------------------------------
+    archivos_todos = glob.glob(os.path.join(RUTA_RAW, "*.xlsx"))
+    archivos_a_leer = []
+    df_historico = pd.DataFrame()
+    fecha_corte = pd.Timestamp('1900-01-01')
 
-    # 1. CARGA MASIVA
-    df_consolidado = leer_carpeta(ruta_carpeta)
+    if os.path.exists(RUTA_GOLD_COMPLETA):
+        try:
+            df_historico = pd.read_parquet(RUTA_GOLD_COMPLETA)
+            if not df_historico.empty and 'Fecha_Inicio' in df_historico.columns:
+                # Usamos Fecha_Inicio para saber cuál fue el último archivo procesado
+                fecha_corte = pd.to_datetime(df_historico['Fecha_Inicio'], errors='coerce').max()
+                console.print(f"[green]✅ Histórico cargado. Última versión: {fecha_corte.date()}[/]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Error leyendo histórico ({e}). Se procesará todo de nuevo.[/]")
 
-    if df_consolidado.empty:
-        console.print("[red]❌ No se cargaron datos. Verifica la ruta o los archivos.[/]")
+    for arch in archivos_todos:
+        if "Consolidado" in arch or "~$" in arch: continue
+        f_arch = pd.Timestamp(extraer_fecha_archivo(arch))
+        if f_arch > fecha_corte:
+            archivos_a_leer.append(arch)
+
+    if not archivos_a_leer:
+        console.print("[bold green]✅ El Maestro ya está actualizado.[/]")
         return
 
-    # 2. GENERAR FECHAS 
-    console.print("[cyan]Calculando fechas de archivos...[/]")
-    df_consolidado['Fecha_Origen'] = df_consolidado['Source.Name'].apply(extraer_fecha_archivo)
-
-    # 3. RENOMBRADO DE COLUMNAS
-    df_consolidado.columns = df_consolidado.columns.str.strip().str.title()
+    # ---------------------------------------------------------
+    # 2. CARGA Y TRANSFORMACIONES ORIGINALES
+    # ---------------------------------------------------------
+    console.print(f"[cyan]🚀 Procesando {len(archivos_a_leer)} archivos nuevos...[/]")
+    df_nuevo = leer_carpeta(archivos_especificos=archivos_a_leer)
     
+    if df_nuevo.empty: return
+
+    # Inyectamos la fecha del nombre como Fecha_Inicio
+    df_nuevo['Fecha_Inicio'] = df_nuevo['Source.Name'].apply(extraer_fecha_archivo)
+    df_nuevo['Fecha_Inicio'] = pd.to_datetime(df_nuevo['Fecha_Inicio'], errors='coerce')
+
+    # Renombrado y Normalización (Tu lógica original)
+    df_nuevo.columns = df_nuevo.columns.str.strip().str.title()
     mapa_renombre = {
         "Nombre": "Nombre_Completo", 
-        "Apellido": "OficinaSae",      # Apellido trae la Oficina SAE
-        "Oficina": "OficinaSistema",   # Oficina trae la Oficina Sistema
-        "Doc. De Identidad": "Doc_Identidad",
-        "Doc. de Identidad": "Doc_Identidad",
-        "Cedula": "Doc_Identidad"
+        "Apellido": "OficinaSae",
+        "Oficina": "OficinaSistema",
+        "Doc. De Identidad": "Doc_Identidad", "Doc. de Identidad": "Doc_Identidad", "Cedula": "Doc_Identidad"
     }
-    df_consolidado.rename(columns=mapa_renombre, inplace=True)
+    df_nuevo.rename(columns=mapa_renombre, inplace=True)
 
-    if "Nombre_Completo" not in df_consolidado.columns:
-        console.print("[red]❌ Error: Falta columna 'Nombre' en los archivos.[/]")
-        return
-
-    # 4. LIMPIEZA DE TEXTO
+    # Limpieza de texto y Filtro Robots
     cols_texto = ["Nombre_Completo", "OficinaSae", "OficinaSistema", "Doc_Identidad"]
-    for col in cols_texto:
-        if col in df_consolidado.columns:
-            df_consolidado[col] = df_consolidado[col].fillna("").astype(str).str.upper().str.strip()
+    for col in [c for c in cols_texto if c in df_nuevo.columns]:
+        df_nuevo[col] = df_nuevo[col].fillna("").astype(str).str.upper().str.strip()
 
-    # 5. FILTRO ANTI-ROBOTS
-    filas_antes = len(df_consolidado)
-    mask_humanos = ~df_consolidado['Nombre_Completo'].str.contains(PATRON_NO_HUMANO, regex=True, na=False)
-    df_humanos = df_consolidado[mask_humanos].copy()
-    
-    if len(df_humanos) < filas_antes:
-        console.print(f"[yellow]🛡️ Se filtraron {filas_antes - len(df_humanos)} registros corporativos/robots.[/]")
+    df_nuevo = df_nuevo[~df_nuevo['Nombre_Completo'].str.contains(PATRON_NO_HUMANO, regex=True, na=False)].copy()
 
-    # =========================================================================
-    # ⚡ CAMBIO CLAVE: LOGICA SCD (DIMENSIONES CAMBIANTES)
-    # =========================================================================
+    # Creación del 'Combinado' para identidad única (Persona + Ubicación)
+    df_nuevo["Combinado"] = (df_nuevo["Nombre_Completo"] + " " + df_nuevo["OficinaSae"]).str.strip()
 
-    # 6. GENERAR COLUMNA COMBINADA (ADELANTADO)
-    # Creamos la identidad única (Nombre + Oficina) ANTES de borrar duplicados.
-    if "OficinaSistema" in df_humanos.columns:
-        df_humanos["Combinado"] = (
-            df_humanos["Nombre_Completo"] + " " + df_humanos["OficinaSistema"]
-        ).str.strip()
-    else:
-        df_humanos["Combinado"] = df_humanos["Nombre_Completo"]
+    # ---------------------------------------------------------
+    # 3. LÓGICA DE DIMENSIÓN DINÁMICA (SCD)
+    # ---------------------------------------------------------
+    # Unimos lo nuevo con lo viejo
+    df_unificado = pd.concat([df_historico, df_nuevo], ignore_index=True)
 
-    # 7. DEDUPLICACIÓN POR 'COMBINADO'
-    # Ordenamos: 
-    #   1. Combinado (Agrupa por Empleado+Ubicación)
-    #   2. Fecha Descendente (Para quedarnos con la versión más reciente de ESA ubicación)
-    df_humanos.sort_values(by=["Combinado", "Fecha_Origen"], ascending=[True, False], inplace=True)
-    
-    # El subset es 'Combinado'. Esto permite que existan:
-    # "WILLIAMS CRUZ EL PARRAL" y "WILLIAMS CRUZ TORRE FIBEX" al mismo tiempo.
-    df_final = df_humanos.drop_duplicates(subset=["Combinado"], keep='first').copy()
+    # Ordenamos para procesar las vigencias
+    df_unificado.sort_values(by=["Combinado", "Fecha_Inicio"], ascending=[True, True], inplace=True)
 
-    # =========================================================================
+    # Generamos la 'Fecha_Fin': es la Fecha_Inicio del siguiente registro para ese mismo 'Combinado'
+    # Si es el último registro, la Fecha_Fin será nula (Vigente)
+    df_unificado['Fecha_Fin'] = df_unificado.groupby('Combinado')['Fecha_Inicio'].shift(-1)
 
-    # 8. SELECCIÓN FINAL
-    cols_finales_orden = [
-        "Doc_Identidad", 
-        "Nombre_Completo", 
-        "Combinado", 
-        "OficinaSae", 
-        "OficinaSistema", 
-        "Fecha_Origen",
-        "Franquicia Vendedor", 
-        "Franquicia Cobrador"
+    # Columna de estado para Power BI
+    df_unificado['Estado_Vigencia'] = df_unificado['Fecha_Fin'].apply(lambda x: 'ACTIVO' if pd.isnull(x) else 'HISTÓRICO')
+
+    # ---------------------------------------------------------
+    # 4. SELECCIÓN FINAL Y GUARDADO
+    # ---------------------------------------------------------
+    cols_finales = [
+        "Doc_Identidad", "Nombre_Completo", "Combinado", 
+        "OficinaSae", "OficinaSistema", "Fecha_Inicio", "Fecha_Fin", 
+        "Estado_Vigencia", "Franquicia Vendedor", "Franquicia Cobrador"
     ]
-    cols_existentes = [c for c in cols_finales_orden if c in df_final.columns]
-    df_final = df_final[cols_existentes]
+    df_final = df_unificado[[c for c in cols_finales if c in df_unificado.columns]]
     df_final = limpiar_nulos_powerbi(df_final)
 
-    # Reporte de control
-    if 'Fecha_Origen' in df_final.columns:
-        fechas_ordenadas = df_final['Fecha_Origen'].sort_values(ascending=False)
-        fecha_max = fechas_ordenadas.iloc[0].strftime('%d-%m-%Y')
-        console.print(f"[cyan]ℹ️ Fecha más reciente procesada: {fecha_max}[/]")
-
-    # Verificación visual rápida (Solo si hay data)
-    console.print(f"[cyan]ℹ️ Filas totales (Histórico de ubicaciones): {len(df_final)}[/]")
-
-    # 9. GUARDADO
-    console.print(f"[green]✔ Maestro Generado Exitosamente.[/]")
-    guardar_parquet(df_final, "Maestro_Empleados_Gold.parquet", filas_iniciales=len(df_consolidado))
+    console.print(f"[green]✔ Maestro actualizado. Total registros (vigentes + históricos): {len(df_final)}[/]")
+    guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_nuevo))
 
 if __name__ == "__main__":
     ejecutar()

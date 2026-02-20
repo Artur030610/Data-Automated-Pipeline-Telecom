@@ -47,6 +47,7 @@ PATHS = {
     "raw_estados":          os.path.join(RUTA_BASE, "raw_data", "15-Estados y Ciudades"),
     "raw_hist_abonados":    os.path.join(RUTA_BASE, "raw_data", "16-Historico de abonados", "1-Historico"),
     "raw_estad_abonados":   os.path.join(RUTA_BASE, "raw_data", "16-Historico de abonados", "2-Estadisticas"),
+    "raw_clientes":         os.path.join(RUTA_BASE, "raw_data", "16-Historico de abonados", "3-Clientes"),
     "raw_empleados":        os.path.join(RUTA_BASE, "raw_data", "17-Empleados"),
     "raw_referidos":        os.path.join(RUTA_BASE, "raw_data", "18-Referidos"),
     "raw_horaspago":        os.path.join(RUTA_BASE, "raw_data", "1-Recaudación", "1-Horas de pago"),

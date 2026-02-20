@@ -1,142 +1,203 @@
 import pandas as pd
 import os
-# Asumimos que config y utils están en la carpeta raíz y se ejecuta desde main.py
-from config import PATHS, FOLDERS_RECLAMOS_GENERAL, SUB_RECLAMOS_APP, SUB_RECLAMOS_BANCO
-from utils import leer_carpeta, guardar_parquet, console, reportar_tiempo
+import sys
 
-# --- A. RECLAMOS GENERALES ---
+# --- EL TRUCO DEL ASCENSOR ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
+# IMPORTAMOS LAS VARIABLES EXACTAS DE TU CONFIG
+from config import (
+    PATHS, 
+    FOLDERS_RECLAMOS_GENERAL, 
+    SUB_RECLAMOS_APP, 
+    SUB_RECLAMOS_BANCO
+)
+from utils import guardar_parquet, console, reportar_tiempo, ingesta_inteligente
+
+# -----------------------------------------------------------------------------
+# 1. ETL: RECLAMOS GENERALES (Call Center, OOCC, RRSS)
+# -----------------------------------------------------------------------------
 @reportar_tiempo  
 def procesar_reclamos_general():
-    console.rule("[bold cyan]1. ETL: RECLAMOS GENERALES (CC + OOCC + RRSS)[/]")
+    console.rule("[bold cyan]1. ETL: RECLAMOS GENERALES (INCREMENTAL)[/]")
     
-    dfs_acumulados = []
+    NOMBRE_GOLD = "Reclamos_General_Gold.parquet"
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
     
+    dfs_nuevos_acumulados = []
+    
+    # Usamos la lista importada de config
     for carpeta_nombre in FOLDERS_RECLAMOS_GENERAL:
         ruta_completa = os.path.join(PATHS["raw_reclamos"], carpeta_nombre)
-        # Aquí no hace falta columnas_esperadas porque concatenas simple
-        df_temp = leer_carpeta(ruta_completa, filtro_exclusion="Consolidado")
         
-        if not df_temp.empty:
-            dfs_acumulados.append(df_temp)
-    
-    if not dfs_acumulados:
-        console.print("[warning]⚠️ No data en carpetas generales.[/]")
-        return
-
-    df = pd.concat(dfs_acumulados, ignore_index=True)
-
-    df = df.rename(columns={"Tipo Llamada": "Origen"})
-    if "Barrio" in df.columns: 
-        df["Barrio"] = df["Barrio"].astype(str).str.upper()
+        df_nuevo_parcial, _ = ingesta_inteligente(
+            ruta_raw=ruta_completa,
+            ruta_gold=RUTA_GOLD_COMPLETA,
+            col_fecha_corte="Fecha Llamada"
+        )
         
-    df["Fecha Llamada"] = pd.to_datetime(df["Fecha Llamada"], errors="coerce")
-    
-    cols = ["N° Abonado", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
-            "Origen", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
-            "Suscripción", "Grupo Afinidad", "Franquicia", "Ciudad"]
-    
-    # --- CORRECCIÓN AQUÍ ---
-    # 1. Filtramos primero las columnas de interés
-    df_final = df.reindex(columns=cols)
-    
-    # 2. Eliminamos duplicados EXACTOS basándonos en esas columnas
-    filas_antes = len(df_final)
-    df_final = df_final.drop_duplicates()
-    filas_despues = len(df_final)
-    
-    if filas_antes > filas_despues:
-        console.print(f"[yellow]  -> Se eliminaron {filas_antes - filas_despues} duplicados en General.[/]")
+        if not df_nuevo_parcial.empty:
+            dfs_nuevos_acumulados.append(df_nuevo_parcial)
 
-    # Limpieza específica que ya tenías
-    for col in ["N° Abonado", "Responsable", "Detalle Respuesta", "Origen"]:
-        df_final[col] = df_final[col].fillna("").astype(str)
-    
-    guardar_parquet(df_final, "Reclamos_General_Gold.parquet")
+    # Carga Histórico
+    df_historico = pd.DataFrame()
+    if os.path.exists(RUTA_GOLD_COMPLETA):
+        df_historico = pd.read_parquet(RUTA_GOLD_COMPLETA)
 
-# --- B. FALLAS APP ---
+    # Si no hay nada nuevo
+    if not dfs_nuevos_acumulados:
+        console.print("[bold green]✅ Reclamos Generales: Sistema actualizado.[/]")
+        if df_historico.empty: return
+    else:
+        # Procesar Lote Nuevo
+        df_nuevo_total = pd.concat(dfs_nuevos_acumulados, ignore_index=True)
+        console.print(f"[cyan]🛠️ Transformando {len(df_nuevo_total)} reclamos generales nuevos...[/]")
+        
+        df_nuevo_total = df_nuevo_total.rename(columns={"Tipo Llamada": "Origen"})
+        
+        cols_std = ["N° Abonado", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
+                    "Origen", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
+                    "Suscripción", "Grupo Afinidad", "Franquicia", "Ciudad"]
+        
+        df_nuevo_total = df_nuevo_total.reindex(columns=cols_std)
+        
+        df_nuevo_total["Fecha Llamada"] = pd.to_datetime(df_nuevo_total["Fecha Llamada"], dayfirst=True, errors="coerce")
+        for col in ["N° Abonado", "Responsable", "Detalle Respuesta", "Origen"]:
+            df_nuevo_total[col] = df_nuevo_total[col].fillna("").astype(str)
+
+        # Unir
+        if not df_historico.empty:
+            df_historico = df_historico.reindex(columns=cols_std)
+            df_final = pd.concat([df_historico, df_nuevo_total], ignore_index=True)
+        else:
+            df_final = df_nuevo_total
+        
+        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Origen"], keep='last')
+        
+        guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final))
+
+
+# -----------------------------------------------------------------------------
+# 2. ETL: FALLAS APP (USANDO CONFIG)
+# -----------------------------------------------------------------------------
 @reportar_tiempo  
 def procesar_fallas_app():
-    console.rule("[bold cyan]2. ETL: FALLAS APP[/]")
+    console.rule("[bold cyan]2. ETL: FALLAS APP (INCREMENTAL)[/]")
     
-    ruta_app = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_APP)
-    df = leer_carpeta(ruta_app)
+    # USO DIRECTO DE LA VARIABLE DE CONFIG
+    RUTA_APP = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_APP)
     
-    if df.empty: return
+    NOMBRE_GOLD = "Reclamos_App_Gold.parquet"
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
 
-    df["Detalle Respuesta"] = df["Detalle Respuesta"].astype(str).str.upper()
-    
-    # Aplicamos drop_duplicates antes de calcular transformaciones para no contar doble
-    df = df.drop_duplicates()
+    if not os.path.exists(RUTA_APP):
+        console.print(f"[bold red]❌ Error: No existe la ruta configurada: {RUTA_APP}[/]")
+        return
 
-    df["OrdenCategoria"] = df.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
-    df["Fecha Llamada"] = pd.to_datetime(df["Fecha Llamada"], dayfirst=True, errors="coerce")
+    # Ingesta
+    df_nuevo, df_historico = ingesta_inteligente(
+        ruta_raw=RUTA_APP,
+        ruta_gold=RUTA_GOLD_COMPLETA,
+        col_fecha_corte="Fecha Llamada"
+    )
+    
+    if df_nuevo.empty:
+        console.print("[bold green]✅ Fallas App: Sistema actualizado.[/]")
+        return
+
+    # Transformación
+    console.print(f"[cyan]📱 Procesando {len(df_nuevo)} registros de APP...[/]")
+    
+    df_nuevo["Detalle Respuesta"] = df_nuevo["Detalle Respuesta"].astype(str).str.upper()
+    df_nuevo["OrdenCategoria"] = df_nuevo.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
+    df_nuevo["Fecha Llamada"] = pd.to_datetime(df_nuevo["Fecha Llamada"], dayfirst=True, errors="coerce")
     
     cols = ["N° Abonado", "Documento", "Cliente", "Estatus", "Saldo", 
             "Fecha Llamada", "Hora Llamada", "Detalle Respuesta", "Responsable", 
             "Suscripción", "Grupo Afinidad", "Franquicia", "Ciudad", "OrdenCategoria"]
     
-    df_final = df.reindex(columns=cols)
+    df_nuevo = df_nuevo.reindex(columns=cols)
     
-    # Segunda limpieza de duplicados por si el reindex generó filas idénticas al quitar columnas únicas
-    df_final = df_final.drop_duplicates()
-
-    for c in ["N° Abonado", "Documento"]:
-        df_final[c] = df_final[c].astype(str).replace('nan', None)
+    # Unión
+    if not df_historico.empty:
+        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+    else:
+        df_final = df_nuevo
     
-    guardar_parquet(df_final, "Reclamos_App_Gold.parquet")
+    if not df_final.empty:
+        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada"], keep='last')
+        guardar_parquet(df_final, NOMBRE_GOLD)
 
-# --- C. FALLAS BANCO ---
+
+# -----------------------------------------------------------------------------
+# 3. ETL: FALLAS BANCOS (USANDO CONFIG)
+# -----------------------------------------------------------------------------
 @reportar_tiempo 
 def procesar_fallas_banco():
-    console.rule("[bold cyan]3. ETL: FALLAS BANCOS[/]")
+    console.rule("[bold cyan]3. ETL: FALLAS BANCOS (INCREMENTAL)[/]")
     
-    ruta_banco = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_BANCO)
-    df = leer_carpeta(ruta_banco)
+    # USO DIRECTO DE LA VARIABLE DE CONFIG
+    RUTA_BANCO = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_BANCO)
     
-    if df.empty: return
-    filas_raw = len(df)
-    
-    # Eliminamos duplicados crudos al inicio
-    df = df.drop_duplicates()
+    NOMBRE_GOLD = "Reclamos_Banco_Gold.parquet"
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
 
-    target = ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"]
-    df["Detalle Respuesta"] = df["Detalle Respuesta"].astype(str).str.upper().str.strip()
-    df = df[df["Detalle Respuesta"].isin(target)].copy()
-    
-    if df.empty:
-        console.print("[warning]⚠️ Sin datos de Banco.[/]")
+    if not os.path.exists(RUTA_BANCO):
+        console.print(f"[bold red]❌ Error: No existe la ruta configurada: {RUTA_BANCO}[/]")
         return
 
-    df["Detalle Respuesta"] = (df["Detalle Respuesta"]
-                               .str.replace("FALLA CON ", "", regex=False)
-                               .str.replace("FALLA ", "", regex=False)
-                               .str.strip())
+    # Ingesta
+    df_nuevo, df_historico = ingesta_inteligente(
+        ruta_raw=RUTA_BANCO,
+        ruta_gold=RUTA_GOLD_COMPLETA,
+        col_fecha_corte="Fecha Llamada"
+    )
+
+    if df_nuevo.empty:
+        console.print("[bold green]✅ Fallas Banco: Sistema actualizado.[/]")
+        return
+
+    # Transformación
+    console.print(f"[cyan]🏦 Procesando {len(df_nuevo)} registros de BANCOS...[/]")
     
-    df["TotalCuenta"] = df.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
-    df["Fecha Llamada"] = pd.to_datetime(df["Fecha Llamada"], errors="coerce")
+    target = ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"]
+    df_nuevo["Detalle Respuesta"] = df_nuevo["Detalle Respuesta"].astype(str).str.upper().str.strip()
     
-    cols = ["N° Abonado", "Cliente", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
-            "Tipo Llamada", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
-            "Observación", "Grupo Afinidad", "Franquicia", "Ciudad", "TotalCuenta"]
-
-    df_final = df.reindex(columns=cols)
+    # Filtro
+    df_nuevo = df_nuevo[df_nuevo["Detalle Respuesta"].isin(target)].copy()
     
-    # Aseguramos unicidad final
-    df_final = df_final.drop_duplicates()
+    if not df_nuevo.empty:
+        df_nuevo["Detalle Respuesta"] = (df_nuevo["Detalle Respuesta"]
+                                        .str.replace("FALLA CON ", "", regex=False)
+                                        .str.replace("FALLA ", "", regex=False)
+                                        .str.strip())
+        
+        df_nuevo["TotalCuenta"] = df_nuevo.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
+        df_nuevo["Fecha Llamada"] = pd.to_datetime(df_nuevo["Fecha Llamada"], dayfirst=True, errors="coerce")
+        
+        cols = ["N° Abonado", "Cliente", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
+                "Tipo Llamada", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
+                "Observación", "Grupo Afinidad", "Franquicia", "Ciudad", "TotalCuenta"]
 
-    for c in ["Observación", "N° Abonado", "Cliente", "Responsable"]:
-        df_final[c] = df_final[c].fillna("").astype(str)
+        df_nuevo = df_nuevo.reindex(columns=cols)
 
-    guardar_parquet(df_final, "Reclamos_Banco_Gold.parquet", filas_iniciales=filas_raw)
+        # Unión
+        if not df_historico.empty:
+            df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+        else:
+            df_final = df_nuevo
+        
+        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Detalle Respuesta"], keep='last')
+        guardar_parquet(df_final, NOMBRE_GOLD)
+    else:
+        console.print("[yellow]⚠️ Archivos leídos pero sin fallas bancarias relevantes.[/]")
 
-# ==========================================
-# FUNCIÓN MAESTRA
-# ==========================================
 def ejecutar():
-    """
-    Esta función es la que llama main.py
-    """
-    console.print("[bold blue]Iniciando Suite de Reclamos...[/]")
     procesar_reclamos_general()
     procesar_fallas_app()
     procesar_fallas_banco()
+
+if __name__ == "__main__":
+    ejecutar()

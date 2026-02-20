@@ -1,23 +1,24 @@
 import pandas as pd
 import numpy as np
+import os
 from config import PATHS, LISTA_VENDEDORES_OFICINA, LISTA_VENDEDORES_PROPIOS, MAPA_MESES
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+# Agregamos la nueva función maestra a los imports
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente
 
+# --- LÓGICA DE CLASIFICACIÓN (Intacta) ---
 def clasificar_canal(row):
     """
     Determina el canal de venta basado en prioridades y listas blancas.
-    Se apoya en las correcciones previas hechas en 'nombre_detectado' y 'Oficina'.
     """
-    vendedor = str(row["Vendedor"]).lower()
-    nombre_detectado = str(row["nombre_detectado"])
-    tipo_coincidencia = str(row["tipo_coincidencia"])
+    vendedor = str(row.get("Vendedor", "")).lower()
+    nombre_detectado = str(row.get("nombre_detectado", ""))
+    tipo_coincidencia = str(row.get("tipo_coincidencia", ""))
     
     # PRIORIDAD 1: CALL CENTER
     if "televentas" in vendedor or "call center" in vendedor:
         return "CALL CENTER"
     
     # PRIORIDAD 2: OFICINA COMERCIAL
-    # Si fue detectado por Fuzzy, por Regla Bejuma, o está en lista blanca.
     condicion_oficina_detectada = (
         nombre_detectado != "nan" and 
         nombre_detectado != "" and 
@@ -29,11 +30,8 @@ def clasificar_canal(row):
     if condicion_oficina_detectada or (vendedor in LISTA_VENDEDORES_OFICINA):
         return "OFICINA COMERCIAL"
     
-    # PRIORIDAD 3: VENDEDORES PROPIOS (Ventas Calle)
-    condicion_calle = (
-        "ventas" in vendedor and 
-        "televentas" not in vendedor
-    )
+    # PRIORIDAD 3: VENDEDORES PROPIOS
+    condicion_calle = ("ventas" in vendedor and "televentas" not in vendedor)
     
     if condicion_calle or (vendedor in LISTA_VENDEDORES_PROPIOS):
         return "VENDEDORES PROPIOS"
@@ -43,9 +41,15 @@ def clasificar_canal(row):
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]9. ETL: VENTAS (LISTADO GENERAL)[/]")
+    console.rule("[bold magenta]9. ETL: VENTAS (INCREMENTAL INTELIGENTE)[/]")
     
-    # 1. Definición de Columnas Esperadas
+    # 1. Configuración de Rutas
+    RUTA_RAW = PATHS["ventas_abonados"]
+    NOMBRE_GOLD = "Ventas_Listado_Gold.parquet"
+    # Construimos la ruta completa al Parquet para que la función la encuentre
+    RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
+
+    # Columnas que esperamos del Raw
     cols_esperadas = [
         "ID", "N° Abonado", "Fecha Contrato", "Estatus", "Suscripción", 
         "Grupo Afinidad", "Nombre Franquicia", "Ciudad", "Vendedor", 
@@ -53,110 +57,112 @@ def ejecutar():
         "tipo_coincidencia", "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"
     ]
 
-    # 2. Lectura
-    df = leer_carpeta(
-        PATHS["ventas_abonados"], 
-        filtro_exclusion="Data_Consolidado_Ventas", 
-        columnas_esperadas=cols_esperadas
+    # -------------------------------------------------------------------------
+    # 2. INGESTA INTELIGENTE
+    # -------------------------------------------------------------------------
+    # Aquí le decimos: "Usa 'Fecha Contrato' para saber qué es nuevo"
+    df_nuevo, df_historico = ingesta_inteligente(
+        ruta_raw=RUTA_RAW, 
+        ruta_gold=RUTA_GOLD_COMPLETA, 
+        col_fecha_corte="Fecha Contrato"
     )
     
-    if df.empty: return
+    # Si no hay nada nuevo y ya tenemos historia, terminamos aquí.
+    if df_nuevo.empty and not df_historico.empty:
+        console.print("[bold green]✅ No hay ventas nuevas. El proceso terminó temprano.[/]")
+        return
 
-    filas_raw = len(df)
+    # -------------------------------------------------------------------------
+    # 3. TRANSFORMACIÓN (SOLO A LO NUEVO)
+    # -------------------------------------------------------------------------
+    if not df_nuevo.empty:
+        console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} registros nuevos...[/]")
+        
+        # 1. Asegurar columnas base
+        df_nuevo = df_nuevo.reindex(columns=cols_esperadas)
+        
+        # 2. Renombres
+        df_nuevo = df_nuevo.rename(columns={"oficina_comercial": "Oficina"})
+        df_nuevo["Tipo de afluencia"] = "VENTAS"
+        
+        # 3. CORRECCIÓN DE FECHAS (Híbrida)
+        # Convertimos 'Fecha Contrato' usando lógica Excel serial + Texto
+        ser_numerica = pd.to_numeric(df_nuevo["Fecha Contrato"], errors='coerce')
+        mask_es_serial = ser_numerica.notna() & (ser_numerica > 35000)
+        
+        fechas_finales = pd.Series(pd.NaT, index=df_nuevo.index)
+        
+        # A) Seriales numéricos
+        if mask_es_serial.any():
+            fechas_finales[mask_es_serial] = pd.to_datetime(ser_numerica[mask_es_serial], unit='D', origin='1899-12-30')
+        
+        # B) Texto normal
+        if (~mask_es_serial).any():
+            fechas_finales[~mask_es_serial] = pd.to_datetime(df_nuevo.loc[~mask_es_serial, "Fecha Contrato"], dayfirst=True, errors='coerce')
+            
+        df_nuevo["Fecha Contrato"] = fechas_finales
+        df_nuevo["Mes"] = df_nuevo["Fecha Contrato"].dt.month.map(MAPA_MESES).str.capitalize()
 
-    # 3. Transformación Básica
-    # Renombramos oficina_comercial -> Oficina
-    df = df.rename(columns={"oficina_comercial": "Oficina"})
-    
-    # Columna Fija
-    df["Tipo de afluencia"] = "VENTAS"
-    
+        # 4. LIMPIEZA DE TEXTO
+        # Convertimos todo a string limpio
+        columnas_texto = ["Vendedor", "Ciudad", "nombre_detectado", "Oficina", "N° Abonado"]
+        for col in columnas_texto:
+            if col in df_nuevo.columns:
+                df_nuevo[col] = df_nuevo[col].fillna("").astype(str).str.strip()
+                if col != "Vendedor": 
+                     df_nuevo[col] = df_nuevo[col].str.upper()
+                else:
+                     df_nuevo[col] = df_nuevo[col].str.lower()
+
+        # 5. REGLAS BEJUMA (Forzado)
+        tiene_bejuma = df_nuevo["Vendedor"].str.contains("bejuma", case=False, na=False)
+        tiene_oficina = df_nuevo["Vendedor"].str.contains("ofic", case=False, na=False)
+        mask_bejuma = tiene_bejuma & tiene_oficina
+        
+        if mask_bejuma.any():
+            df_nuevo.loc[mask_bejuma, "Oficina"] = "BEJUMA"
+            df_nuevo.loc[mask_bejuma, "tipo_coincidencia"] = "Oficina Detectada"
+            df_nuevo.loc[mask_bejuma, "nombre_detectado"] = "OFICINA BEJUMA"
+
+        # 6. CLASIFICACIÓN DE CANAL
+        df_nuevo["Canal"] = df_nuevo.apply(clasificar_canal, axis=1)
+
+        # 7. LIMPIEZA FINAL
+        cols_a_borrar = ["Estado", "Cliente", "ID", "Serv/Paquete", 
+                         "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"]
+        df_nuevo = df_nuevo.drop(columns=cols_a_borrar, errors="ignore")
+        
+        # Filtro de calidad
+        df_nuevo = df_nuevo[df_nuevo['tipo_coincidencia'] != 'Pendiente de Revisión']
+
     # -------------------------------------------------------------------------
-    # --- CORRECCIÓN DE FECHAS (BLINDAJE HÍBRIDO) ---
+    # 4. UNIFICACIÓN Y GUARDADO
     # -------------------------------------------------------------------------
-    # Soluciona el problema de fechas mixtas (Serials Excel vs Texto) que causaban el 1970
-    console.print("[yellow]   Corrigiendo fechas mixtas (Serials Excel vs Texto)...[/]")
-    
-    # Intentamos convertir todo a numérico. Lo que sea texto se vuelve NaN.
-    ser_numerica = pd.to_numeric(df["Fecha Contrato"], errors='coerce')
-    
-    # Identificamos seriales válidos (mayores a 35000 son fechas post-1995)
-    mask_es_serial = ser_numerica.notna() & (ser_numerica > 35000)
-    
-    fechas_finales = pd.Series(pd.NaT, index=df.index)
-    
-    # A) Convertimos los números de Excel (origen 1899)
-    if mask_es_serial.any():
-        fechas_finales[mask_es_serial] = pd.to_datetime(
-            ser_numerica[mask_es_serial], 
-            unit='D', 
-            origin='1899-12-30'
-        )
-    
-    # B) Convertimos los textos normales
-    if (~mask_es_serial).any():
-        fechas_finales[~mask_es_serial] = pd.to_datetime(
-            df.loc[~mask_es_serial, "Fecha Contrato"], 
-            dayfirst=True, 
-            errors='coerce'
+    df_final = pd.DataFrame()
+
+    # Unimos Histórico + Nuevo
+    if not df_historico.empty and not df_nuevo.empty:
+        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+    elif not df_nuevo.empty:
+        df_final = df_nuevo
+    else:
+        df_final = df_historico
+
+    if not df_final.empty:
+        filas_antes = len(df_final)
+        
+        # Deduplicación: Usamos 'keep=last' para que la versión nueva (quizás corregida) prevalezca
+        df_final = df_final.drop_duplicates(
+            subset=["N° Abonado", "Fecha Contrato", "Vendedor", "Ciudad"], 
+            keep='last'
         )
         
-    df["Fecha Contrato"] = fechas_finales
+        # Guardamos usando tu función de utils que maneja bloqueos de archivo
+        guardar_parquet(
+            df_final, 
+            NOMBRE_GOLD,
+            filas_iniciales=filas_antes
+        )
 
-    # Mes (Recalculamos con la fecha ya limpia)
-    df["Mes"] = df["Fecha Contrato"].dt.month.map(MAPA_MESES).str.capitalize()
-
-    # -------------------------------------------------------------------------
-    # --- LIMPIEZA DE TEXTO ---
-    # -------------------------------------------------------------------------
-    df["Vendedor"] = df["Vendedor"].fillna("").astype(str).str.lower().str.strip()
-    df["Ciudad"] = df["Ciudad"].fillna("").astype(str).str.upper().str.strip()
-    df["nombre_detectado"] = df["nombre_detectado"].fillna("").astype(str).str.upper().str.strip()
-    df["Oficina"] = df["Oficina"].fillna("").astype(str).str.upper().str.strip()
-
-    # -------------------------------------------------------------------------
-    # --- CORRECCIÓN FORZADA: BEJUMA ---
-    # -------------------------------------------------------------------------
-    # Regla Estricta: Debe contener "bejuma" Y TAMBIÉN "ofic".
-    # Esto asegura que sea la oficina física y no un vendedor de calle en Bejuma.
-    
-    console.print("[yellow]   Aplicando reglas forzadas de Bejuma (Solo Oficinas)...[/]")
-    
-    tiene_bejuma = df["Vendedor"].str.contains("bejuma", case=False, na=False)
-    tiene_oficina = df["Vendedor"].str.contains("ofic", case=False, na=False)
-    
-    mask_bejuma = tiene_bejuma & tiene_oficina
-    
-    if mask_bejuma.any():
-        # Forzamos valores para que clasifique correctamente
-        df.loc[mask_bejuma, "Oficina"] = "BEJUMA"
-        df.loc[mask_bejuma, "tipo_coincidencia"] = "Oficina Detectada"
-        df.loc[mask_bejuma, "nombre_detectado"] = "OFICINA BEJUMA"
-    # -------------------------------------------------------------------------
-
-    # 4. Lógica de Negocio (Canal)
-    console.print("[cyan]   Calculando Canal de Venta...[/]")
-    # Ahora que Bejuma tiene datos válidos, esta función le asignará OFICINA COMERCIAL
-    df["Canal"] = df.apply(clasificar_canal, axis=1)
-
-    # 5. Selección y Limpieza Final
-    # Eliminamos duplicados
-    df = df.drop_duplicates(subset=[
-        "N° Abonado", "ID", "Fecha Contrato", "Vendedor","Ciudad"])
-    
-    # Eliminamos columnas técnicas del Fuzzy
-    cols_a_borrar = ["Estado", "Cliente", "ID", "Source.Name", "Serv/Paquete", 
-                     "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"]
-    
-    df = df.drop(columns=cols_a_borrar, errors="ignore")
-    df = df.drop_duplicates()
-    
-    # Filtro final de calidad: Eliminamos lo que siga pendiente
-    df = df[df['tipo_coincidencia'] != 'Pendiente de Revisión']
-    
-    # 6. Carga
-    guardar_parquet(
-        df, 
-        "Ventas_Listado_Gold.parquet",
-        filas_iniciales=filas_raw
-    )
+if __name__ == "__main__":
+    ejecutar()
