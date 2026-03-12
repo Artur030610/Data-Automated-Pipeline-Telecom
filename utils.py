@@ -548,3 +548,125 @@ def obtener_rango_fechas(nombre_archivo):
     except Exception as e:
         print(f"Error parseando fechas en {nombre_archivo}: {e}")
         return None, None, None
+@audit_performance
+def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha):
+    """
+    Ingesta Incremental (Upsert / Drop & Replace) usando Polars:
+    1. Lee los Excels nuevos en ruta_raw usando calamine y barra de progreso.
+    2. Extrae las fechas exactas que vienen DENTRO de los datos.
+    3. Va al Parquet Histórico (Bronze) y BORRA esas fechas (Estrategia Anti-Bloqueo Windows).
+    4. Une el histórico limpio con los datos nuevos y sobrescribe.
+    """
+    import polars as pl
+    import glob
+    import os
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    
+    console.rule(f"[bold purple]⚡ INGESTA INCREMENTAL POLARS (Ref: {columna_fecha})[/]")
+    
+    # 1. Buscar Excels en la carpeta RAW
+    archivos_raw = glob.glob(os.path.join(ruta_raw, "*.xlsx"))
+    archivos_validos = [f for f in archivos_raw if not os.path.basename(f).startswith("~$")]
+    
+    if not archivos_validos:
+        console.print("[yellow]⚠️ No hay archivos RAW nuevos para procesar en esta ruta.[/]")
+        return False
+
+    # 2. Leer los datos nuevos CON BARRA DE PROGRESO
+    dfs_nuevos = []
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]({task.completed}/{task.total})[/]"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        TextColumn("[dim]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task("", total=len(archivos_validos))
+        
+        for archivo in archivos_validos:
+            nombre = os.path.basename(archivo)
+            progress.update(task, description=f"📄 Leyendo {nombre}")
+            
+            try:
+                # infer_schema_length=0 para evitar problemas de tipos mixtos
+                df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0)
+                
+                # --- TRACTOR DE FECHAS ROBUSTO ---
+                df = df.with_columns(
+                    pl.coalesce([
+                        pl.col(columna_fecha).str.strptime(pl.Date, "%Y-%m-%d %H:%M:%S", strict=False),
+                        pl.col(columna_fecha).str.strptime(pl.Date, "%Y-%m-%d", strict=False),
+                        pl.col(columna_fecha).str.strptime(pl.Date, "%d/%m/%Y %H:%M:%S", strict=False),
+                        pl.col(columna_fecha).str.strptime(pl.Date, "%d/%m/%Y", strict=False),
+                        pl.col(columna_fecha).str.strptime(pl.Date, "%d-%m-%Y", strict=False)
+                    ]).alias(columna_fecha)
+                )
+                
+                # Metadata del origen
+                df = df.with_columns(pl.lit(nombre).alias("Source.Name"))
+                dfs_nuevos.append(df)
+                
+            except Exception as e:
+                logger.error(f"Error leyendo {nombre}: {e}")
+                progress.console.print(f"[red]❌ Error leyendo {nombre}: {e}[/]")
+            
+            progress.advance(task)
+            
+    if not dfs_nuevos:
+        return False
+        
+    # Unificamos la data nueva
+    df_nuevo_completo = pl.concat(dfs_nuevos, how="diagonal")
+    
+    # 3. Extraer fechas únicas (ignorar nulos)
+    fechas_nuevas = df_nuevo_completo.drop_nulls(subset=[columna_fecha])[columna_fecha].unique().to_list()
+    console.print(f"[green]📅 Fechas detectadas para actualizar: {len(fechas_nuevas)} días únicos.[/]")
+
+    # 4. LÓGICA DROP & REPLACE (Solución Final Blindada Error 1224)
+    if os.path.exists(ruta_bronze_historico):
+        console.print(f"[cyan]🔄 Cruzando con histórico: {os.path.basename(ruta_bronze_historico)}...[/]")
+        
+        try:
+            # 1. Forzamos la lectura SIN mapeo de memoria para que Windows no bloquee el archivo
+            with open(ruta_bronze_historico, "rb") as f:
+                df_historico = pl.read_parquet(f, use_pyarrow=False)
+            
+            # 2. Filtramos lo que vamos a actualizar
+            df_historico_limpio = df_historico.filter(
+                ~pl.col(columna_fecha).is_in(fechas_nuevas)
+            )
+            
+            # 3. Concatenamos
+            df_final = pl.concat([df_historico_limpio, df_nuevo_completo], how="diagonal")
+            
+            # 4. TRUCO DE RENOMBRADO: Para evitar el bloqueo de escritura
+            # Guardamos en un archivo temporal y luego reemplazamos el original
+            ruta_temp = ruta_bronze_historico + ".tmp"
+            df_final.write_parquet(ruta_temp, compression="snappy")
+            
+            # Cerramos cualquier posible rastro y reemplazamos
+            if os.path.exists(ruta_bronze_historico):
+                os.remove(ruta_bronze_historico)
+            os.rename(ruta_temp, ruta_bronze_historico)
+
+        except Exception as e:
+            logger.error(f"Error en Drop & Replace: {e}")
+            console.print(f"[yellow]⚠️ Reintentando con carga Full por error de acceso...[/]")
+            df_final = df_nuevo_completo
+            df_final.write_parquet(ruta_bronze_historico, compression="snappy")
+    else:
+        df_final = df_nuevo_completo
+        df_final.write_parquet(ruta_bronze_historico, compression="snappy")
+    # 5. Guardar versión definitiva
+    os.makedirs(os.path.dirname(ruta_bronze_historico), exist_ok=True)
+    df_final.write_parquet(ruta_bronze_historico, compression="snappy")
+    
+    filas = df_final.height
+    logger.info(f"DATA_QUALITY | BRONZE INCREMENTAL | Guardadas: {filas:,}")
+    console.print(f"[bold green]✅ ARCHIVO BRONZE ACTUALIZADO: {os.path.basename(ruta_bronze_historico)} ({filas:,} filas)[/]")
+    
+    return True

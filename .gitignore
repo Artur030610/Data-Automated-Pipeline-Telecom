@@ -2,7 +2,7 @@
 service_account.json
 client_secret.json
 credentials.json
-.env
+*.env
 
 # --- PYTHON ---
 __pycache__/
@@ -12,11 +12,12 @@ venv/
 .venv/
 a.py
 b.py
+
 # --- LOGS Y BASURA ---
 logs/
 *.log
 npm-debug.log
-
+*.csv
 # --- EXCEL / DATA ---
 ~$*.xlsx
 *.tmp

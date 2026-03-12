@@ -1,41 +1,42 @@
 @echo off
-setlocal
-title Orquestador Fibex - Data Stack
-
-:: 1. Carpeta donde está el .bat (02-Scripts)
-set SCRIPTS_DIR=%~dp0
-
-:: 2. Salto para llegar al WinPython
-:: Subimos 2 niveles (..\..\) para llegar a 'A-DataStack'
-set PY_EXE="%SCRIPTS_DIR%..\..\00-Toolkits\WinPython\WPy64-312101\python\python.exe"
-set MAIN="%SCRIPTS_DIR%main.py"
-
+title REPARADOR DE RUTAS - FIBEX
 echo ==================================================
-echo    CARGANDO ENTORNO DESDE TOOLKITS
+echo   PASO 1: Verificando ubicacion de Python...
 echo ==================================================
-echo.
 
-:: Verificación de seguridad antes de arrancar
-if not exist %PY_EXE% (
-    echo [!] ERROR: No encuentro el Python en:
-    echo %PY_EXE%
+:: Usamos comillas solo al final para evitar errores de duplicacion
+set "PY_JEFE=%USERPROFILE%\Documents\A-DataStack\01-Proyectos\00-Toolkits\WPy64-312101\python\python.exe"
+set "PY_JOSE=%USERPROFILE%\Documents\A-DataStack\00-Toolkits\WinPython\WPy64-312101\python\python.exe"
+set "MAIN_FILE=%~dp0main.py"
+
+:: --- DETECCION ---
+if exist "%PY_JEFE%" (
+    set "FINAL_PY=%PY_JEFE%"
+    echo [OK] Entorno de JEFE detectado.
+) else if exist "%PY_JOSE%" (
+    set "FINAL_PY=%PY_JOSE%"
+    echo [OK] Entorno de JOSE detectado.
+) else (
+    echo [!] ERROR: No encuentro el archivo python.exe
+    echo Busque en: "%PY_JEFE%"
     echo.
-    echo Revisa si moviste la carpeta WinPython de sitio.
+    echo Por favor, verifica que la carpeta 00-Toolkits este ahi.
     pause
     exit
 )
 
-:: Ejecución
-%PY_EXE% %MAIN%
+echo.
+echo ==================================================
+echo   PASO 2: Lanzando Orquestador
+echo ==================================================
+echo Python: "%FINAL_PY%"
+echo Script: "%MAIN_FILE%"
+echo.
 
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [!] El script se detuvo con errores.
-    pause
-) else (
-    echo.
-    echo [OK] Proceso finalizado.
-    timeout /t 5
-)
+:: REGLA DE ORO PARA CMD /K:
+:: Necesita un juego de comillas EXTRAS envolviendo todo el comando 
+:: para que no se rompa con los espacios de "Jonattan Sotillo"
+cmd /k ""%FINAL_PY%" "%MAIN_FILE%""
 
-endlocal
+:: Si por algun motivo cmd /k fallara, este pause te salvara la vida
+pause

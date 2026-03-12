@@ -2,8 +2,12 @@ import pandas as pd
 import numpy as np
 import os
 import sys
-import glob # Necesario para listar los archivos de horas
-from utils import standard_hours,leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas, archivos_raw
+import glob 
+
+# --- CAMBIO 1: IMPORTAMOS LA NUEVA FUNCIÓN DE POLARS ---
+from utils import standard_hours, leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas
+from utils import ingesta_incremental_polars  # <--- NUEVO
+
 # --- EL TRUCO DEL ASCENSOR ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -11,11 +15,10 @@ sys.path.append(parent_dir)
 # -----------------------------
 
 from config import PATHS, MAPA_MESES
-# Importamos obtener_rango_fechas para leer los nombres de los archivos
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold white]PIPELINE INTEGRAL: RECAUDACIÓN + HORAS (INCREMENTAL INTELIGENTE)[/]")
+    console.rule("[bold white]PIPELINE INTEGRAL: RECAUDACIÓN + HORAS (INCREMENTAL HÍBRIDO)[/]")
     
     # 1. RUTAS
     RUTA_RAW_RECAUDACION = PATHS["raw_recaudacion"]
@@ -24,12 +27,22 @@ def ejecutar():
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
     RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Recaudacion_Raw_Bronze.parquet")
 
+    # =========================================================
+    # --- CAMBIO 2: ACTUALIZACIÓN BRONZE CON POLARS ---
+    # =========================================================
     try:
-        archivos_raw(RUTA_RAW_RECAUDACION, RUTA_BRONZE)
+        # Esto actualiza el Bronze a la velocidad de la luz y sin duplicados
+        ingesta_incremental_polars(
+            ruta_raw=RUTA_RAW_RECAUDACION,
+            ruta_bronze_historico=RUTA_BRONZE,
+            columna_fecha="Fecha"
+        )
     except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó. Error: {e}[/]")
+    
     # ---------------------------------------------------------
-    # 2. INGESTA INTELIGENTE (RECAUDACIÓN)
+    # 2. INGESTA INTELIGENTE PANDAS (SE MANTIENE INTACTO)
+    # Extraemos solo los Excel nuevos para no saturar la RAM
     # ---------------------------------------------------------
     df_nuevo, df_historico = ingesta_inteligente(
         ruta_raw=RUTA_RAW_RECAUDACION,
@@ -42,12 +55,11 @@ def ejecutar():
         return
 
     # ---------------------------------------------------------
-    # 3. PROCESAMIENTO
+    # 3. PROCESAMIENTO (SE MANTIENE 100% INTACTO)
     # ---------------------------------------------------------
     if not df_nuevo.empty:
         console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} pagos nuevos...[/]")
         
-        # A. Limpieza básica Recaudación
         cols_input_recaudacion = [
             "ID Contrato", "ID Pago", "N° Abonado", "Fecha", "Total Pago", 
             "Forma de Pago", "Banco", "Oficina Cobro", 
@@ -56,7 +68,6 @@ def ejecutar():
         ]
         df_nuevo = df_nuevo.reindex(columns=cols_input_recaudacion)
 
-        # Helper limpieza
         def limpiar_id(serie):
             return (serie.astype(str)
                     .str.replace("'", "", regex=False) 
@@ -66,47 +77,32 @@ def ejecutar():
         df_nuevo['ID Pago'] = limpiar_id(df_nuevo['ID Pago'])
         df_nuevo = df_nuevo.drop_duplicates()
 
-        # =========================================================
-        # 4. CARGA INTELIGENTE DE HORAS (EL FIX)
-        # =========================================================
-        # Estrategia: Solo leemos los archivos de horas que coincidan con las fechas de los pagos nuevos
-        
-        # 1. Detectamos el rango de fechas que necesitamos cubrir
-        # Convertimos a datetime temporalmente para calcular min/max
+        # --- FUSIÓN CON HORAS ---
         fechas_pagos = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors='coerce')
         fecha_min_req = fechas_pagos.min()
         fecha_max_req = fechas_pagos.max()
         
         console.print(f"[dim]📅 Buscando horas para el rango: {fecha_min_req.date()} al {fecha_max_req.date()}[/]")
         
-        # 2. Escaneamos la carpeta de horas SIN leer los excels todavía
         todos_archivos_horas = glob.glob(os.path.join(RUTA_RAW_HORAS, "*.xlsx"))
         horas_a_leer = []
         
         with console.status("[bold blue]Filtrando archivos de Horas...[/]"):
             for archivo in todos_archivos_horas:
-                # Usamos tu función de utils para leer la fecha del nombre del archivo
                 inicio_arch, fin_arch, _ = obtener_rango_fechas(archivo)
-                
                 if inicio_arch and fin_arch:
-                    # LÓGICA DE SUPERPOSICIÓN (OVERLAP)
-                    # El archivo nos sirve si su rango toca nuestro rango de fechas requerido
-                    # (InicioArchivo <= FinRequerido) Y (FinArchivo >= InicioRequerido)
                     if (inicio_arch <= fecha_max_req) and (fin_arch >= fecha_min_req):
                         horas_a_leer.append(archivo)
                 else:
-                    # Si el archivo no tiene fecha en el nombre, lo leemos por seguridad
                     horas_a_leer.append(archivo)
         
-        # 3. Leemos SOLO los archivos necesarios
         if horas_a_leer:
-            console.print(f"[bold cyan]📥 Leyendo {len(horas_a_leer)} archivos de Horas relevantes (de {len(todos_archivos_horas)} disponibles)...[/]")
+            console.print(f"[bold cyan]📥 Leyendo {len(horas_a_leer)} archivos de Horas relevantes...[/]")
             df_horas = leer_carpeta(archivos_especificos=horas_a_leer, columnas_esperadas=["ID Pago", "Hora de Pago"])
         else:
             console.print("[warning]⚠️ No se encontraron archivos de horas para estas fechas.[/]")
             df_horas = pd.DataFrame()
 
-        # 4. Merge
         if not df_horas.empty:
             df_horas = df_horas.rename(columns={"ID pago": "ID Pago"})
             df_horas['ID Pago'] = limpiar_id(df_horas['ID Pago'])
@@ -116,9 +112,7 @@ def ejecutar():
         else:
             df_nuevo['Hora de Pago'] = None
 
-        # =========================================================
-        # 5. RESTO DE LA LÓGICA DE NEGOCIO
-        # =========================================================
+        # --- LÓGICA DE NEGOCIO ---
         df_nuevo['N° Abonado'] = df_nuevo['N° Abonado'].astype(str).replace('nan', None)
         df_nuevo['ID Contrato'] = df_nuevo['ID Contrato'].astype(str).replace('nan', None)
         df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce")
@@ -158,11 +152,23 @@ def ejecutar():
         ]
         df_nuevo = df_nuevo.reindex(columns=cols_output)
 
-    # 6. UNIFICACIÓN Y GUARDADO
+    # =========================================================
+    # --- CAMBIO 3: UNIFICACIÓN CON DROP & REPLACE EN GOLD ---
+    # =========================================================
     df_final = pd.DataFrame()
 
     if not df_historico.empty and not df_nuevo.empty:
-        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
+        console.print("[cyan]🔄 Aplicando Drop & Replace en capa Gold...[/]")
+        
+        # 1. Identificamos las fechas exactas que procesamos en esta ejecución
+        fechas_actualizadas = df_nuevo['Fecha'].dropna().unique()
+        
+        # 2. Borramos del histórico cualquier registro viejo de esas fechas
+        df_historico_limpio = df_historico[~df_historico['Fecha'].isin(fechas_actualizadas)]
+        
+        # 3. Concatenamos el histórico limpio con la data completa y fresca de hoy
+        df_final = pd.concat([df_historico_limpio, df_nuevo], ignore_index=True)
+        
     elif not df_nuevo.empty:
         df_final = df_nuevo
     else:
@@ -171,7 +177,7 @@ def ejecutar():
     if not df_final.empty:
         filas_antes = len(df_final)
         df_final = df_final.drop_duplicates(subset=["ID Pago"], keep='last')
-        df_final = standard_hours(df_final, 'Hora de Pago') # Estandarizamos la hora después de unir para evitar problemas de formato
+        df_final = standard_hours(df_final, 'Hora de Pago')
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
 
 if __name__ == "__main__":
