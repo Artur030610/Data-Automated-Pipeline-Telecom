@@ -14,7 +14,7 @@ from config import (
     SUB_RECLAMOS_APP, 
     SUB_RECLAMOS_BANCO
 )
-from utils import guardar_parquet, console, reportar_tiempo, ingesta_inteligente
+from utils import guardar_parquet, console, reportar_tiempo, ingesta_inteligente, archivos_raw
 
 # -----------------------------------------------------------------------------
 # 1. ETL: RECLAMOS GENERALES (Call Center, OOCC, RRSS)
@@ -25,7 +25,13 @@ def procesar_reclamos_general():
     
     NOMBRE_GOLD = "Reclamos_General_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
-    
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Reclamos_General_Raw_Bronze.parquet")
+
+    try:
+        archivos_raw(PATHS["raw_reclamos"], RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+        
     dfs_nuevos_acumulados = []
     
     # Usamos la lista importada de config

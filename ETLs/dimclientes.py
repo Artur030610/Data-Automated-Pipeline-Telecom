@@ -2,21 +2,33 @@ import duckdb
 import pandas as pd
 import os
 import sys
+
 # --- CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import leer_carpeta, reportar_tiempo, console
+from utils import leer_carpeta, reportar_tiempo, console, archivos_raw
 
 @reportar_tiempo
 def ejecutar():
     console.rule("[bold yellow]ETL: DIMENSIÓN CLIENTE (Incremental con DuckDB + Union By Name)[/]")
 
     # 1. Definir rutas
+    ruta_raw = PATHS["raw_hist_abonados"]
     ruta_parquet_existente = os.path.join(PATHS["gold"], "Dim_Cliente.parquet")
     
+    # -------------------------------------------------------------------------
+    # PASO NUEVO: 1.5 GENERAR CAPA BRONZE PARA CONSUMO EXTERNO
+    # -------------------------------------------------------------------------
+    ruta_bronze = os.path.join(PATHS.get("bronze", "data/bronze"), "Dim_Cliente_Raw_Bronze.parquet")
+    try:
+        archivos_raw(ruta_raw, ruta_bronze)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+    # -------------------------------------------------------------------------
+
     # 2. Leer Datos Nuevos (Excels)
     console.print("[info]📂 Leyendo archivos Excel crudos...[/]")
     cols_esperadas = [
@@ -26,7 +38,7 @@ def ejecutar():
     ]
     
     df_new = leer_carpeta(
-        PATHS["raw_hist_abonados"], 
+        ruta_raw, 
         filtro_exclusion="~$", 
         columnas_esperadas=cols_esperadas
     )
@@ -104,15 +116,16 @@ def ejecutar():
         console.print("[info]💾 Escribiendo archivo Parquet consolidado...[/]")
         con.execute(f"COPY ({sql}) TO '{ruta_salida_temp}' (FORMAT PARQUET, COMPRESSION 'SNAPPY')")
         
+        # Lógica para asegurar el reemplazo correcto en Windows
         if os.path.exists(ruta_parquet_existente):
             os.remove(ruta_parquet_existente)
         os.rename(ruta_salida_temp, ruta_parquet_existente)
         
         count = con.execute(f"SELECT COUNT(*) FROM '{ruta_parquet_existente}'").fetchone()[0]
-        console.print(f"[success]✅ Dim_Cliente actualizada. Total registros únicos: {count:,}[/]")
+        console.print(f"[bold green]✅ Dim_Cliente actualizada. Total registros únicos: {count:,}[/]")
 
     except Exception as e:
-        console.print(f"[error]❌ Error en DuckDB: {e}[/]")
+        console.print(f"[bold red]❌ Error en DuckDB: {e}[/]")
         if os.path.exists(ruta_salida_temp):
             os.remove(ruta_salida_temp)
     

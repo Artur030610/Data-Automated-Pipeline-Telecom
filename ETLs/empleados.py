@@ -4,7 +4,7 @@ import os
 import glob
 from datetime import datetime
 from config import PATHS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, archivos_raw
 
 # =============================================================================
 # 1. CONFIGURACIÓN DE FILTROS (Mantenida)
@@ -55,7 +55,12 @@ def ejecutar():
     NOMBRE_GOLD = "Maestro_Empleados_Gold.parquet"
     # Buscamos la ruta en config, si no existe usamos una por defecto
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", ""), NOMBRE_GOLD)
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Maestro_Empleados_Raw_Bronze.parquet")
 
+    try:
+        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
     # ---------------------------------------------------------
     # 1. DETECCIÓN INCREMENTAL
     # ---------------------------------------------------------

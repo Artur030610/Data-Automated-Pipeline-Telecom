@@ -4,7 +4,7 @@ from rich.table import Table
 from rich.prompt import Prompt
 from config import THEME_COLOR
 import time 
-from utils import tiempo
+from utils import tiempo, audit_performance
 
 # ========================================================
 # 1. IMPORTACIÓN DE MÓDULOS (ETLs)
@@ -83,6 +83,7 @@ idf_suite_completa = PipelineIndicadores()
 # ========================================================
 # 3. WRAPPER DE EJECUCIÓN
 # ========================================================
+@audit_performance
 def ejecutar_wrapper(modulo):
     try:
         if isinstance(modulo, list):
@@ -155,7 +156,7 @@ def mostrar_menu():
         expand=False
     )
     console.print(panel)
-
+@audit_performance
 def main():
     mostrar_menu()
     opcion = Prompt.ask("\n[bold yellow]¿Qué proceso deseas correr?[/]", choices=list(MENU.keys()), default="1")
@@ -164,7 +165,7 @@ def main():
     seleccion = MENU.get(opcion)
     if seleccion:
         console.rule(f"[bold blue]Iniciando: {seleccion['label']}")
-        ejecutar_wrapper(seleccion['target'])
+        ejecutar_wrapper(seleccion['target']) 
     
     console.rule("[bold green] FIN DE EJECUCIÓN GLOBAL[/]")
     tiempo(inicio_global)

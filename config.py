@@ -23,7 +23,8 @@ RUTA_BASE = os.path.join(
 PATHS = {
     # --- ESTRUCTURA GENERAL (MEDALLION ARCHITECTURE) ---
     "raw":    os.path.join(RUTA_BASE, "raw_data"),
-    "silver": os.path.join(RUTA_BASE, "silver_data"), # <--- Agregado
+    "bronze": os.path.join(RUTA_BASE, "bronze_data"),
+    "silver": os.path.join(RUTA_BASE, "silver_data"),
     "gold":   os.path.join(RUTA_BASE, "gold_data"),
 
     # --- RUTAS DE ENTRADA ESPECÍFICAS (RAW DATA) ---

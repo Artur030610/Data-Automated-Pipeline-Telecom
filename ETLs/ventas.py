@@ -3,7 +3,7 @@ import numpy as np
 import os
 from config import PATHS, LISTA_VENDEDORES_OFICINA, LISTA_VENDEDORES_PROPIOS, MAPA_MESES
 # Agregamos la nueva función maestra a los imports
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, archivos_raw
 
 # --- LÓGICA DE CLASIFICACIÓN (Intacta) ---
 def clasificar_canal(row):
@@ -48,7 +48,7 @@ def ejecutar():
     NOMBRE_GOLD = "Ventas_Listado_Gold.parquet"
     # Construimos la ruta completa al Parquet para que la función la encuentre
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
-
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Ventas_Listado_Bronze.parquet")
     # Columnas que esperamos del Raw
     cols_esperadas = [
         "ID", "N° Abonado", "Fecha Contrato", "Estatus", "Suscripción", 
@@ -57,6 +57,10 @@ def ejecutar():
         "tipo_coincidencia", "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"
     ]
 
+    try:
+        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
     # -------------------------------------------------------------------------
     # 2. INGESTA INTELIGENTE
     # -------------------------------------------------------------------------
@@ -106,13 +110,21 @@ def ejecutar():
         # 4. LIMPIEZA DE TEXTO
         # Convertimos todo a string limpio
         columnas_texto = ["Vendedor", "Ciudad", "nombre_detectado", "Oficina", "N° Abonado"]
-        for col in columnas_texto:
-            if col in df_nuevo.columns:
-                df_nuevo[col] = df_nuevo[col].fillna("").astype(str).str.strip()
-                if col != "Vendedor": 
-                     df_nuevo[col] = df_nuevo[col].str.upper()
-                else:
-                     df_nuevo[col] = df_nuevo[col].str.lower()
+        
+        # 1. Definimos qué columnas van a qué transformación
+        cols_to_fix = [c for c in columnas_texto if c in df_nuevo.columns]
+        cols_upper = [c for c in cols_to_fix if c != "Vendedor"]
+        cols_lower = ["Vendedor"] if "Vendedor" in cols_to_fix else []
+
+        # 2. Limpieza general (fillna + strip) usando applymap o apply
+        # Esto limpia todas de un solo golpe
+        df_nuevo[cols_to_fix] = df_nuevo[cols_to_fix].fillna("").astype(str).apply(lambda x: x.str.strip())
+
+        # 3. Transformación de caja (Upper/Lower) por bloques
+        if cols_upper:
+            df_nuevo[cols_upper] = df_nuevo[cols_upper].apply(lambda x: x.str.upper())
+        if cols_lower:
+            df_nuevo[cols_lower] = df_nuevo[cols_lower].apply(lambda x: x.str.lower())
 
         # 5. REGLAS BEJUMA (Forzado)
         tiene_bejuma = df_nuevo["Vendedor"].str.contains("bejuma", case=False, na=False)
@@ -151,7 +163,7 @@ def ejecutar():
     if not df_final.empty:
         filas_antes = len(df_final)
         
-        # Deduplicación: Usamos 'keep=last' para que la versión nueva (quizás corregida) prevalezca
+        # Deduplicación: Usamos 'keep=last' para que la versión nueva prevalezca
         df_final = df_final.drop_duplicates(
             subset=["N° Abonado", "Fecha Contrato", "Vendedor", "Ciudad"], 
             keep='last'

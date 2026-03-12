@@ -9,7 +9,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS, FOLDERS_ACT_DATOS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, archivos_raw
 
 @reportar_tiempo
 def ejecutar():
@@ -19,7 +19,12 @@ def ejecutar():
     BASE_PATH_RAW = PATHS["raw_act_datos"]
     NOMBRE_GOLD = "Actualizacion_Datos_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
-
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Actualizacion_Datos_Raw_Bronze.parquet")
+    # ARCHIVOS BRONZE
+    try:
+        archivos_raw(BASE_PATH_RAW, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
     # --- CORRECCIÓN AQUÍ: Quitamos 'Tipo Respuesta' de las comunes ---
     cols_comunes = [
         "N° Abonado", "Estatus", "Saldo", 

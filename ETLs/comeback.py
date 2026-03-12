@@ -9,7 +9,8 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, leer_carpeta
+# IMPORTANTE: Agregamos archivos_raw a las importaciones
+from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, leer_carpeta, archivos_raw
 
 @reportar_tiempo
 def ejecutar():
@@ -19,6 +20,16 @@ def ejecutar():
     RUTA_RAW = PATHS["raw_comeback"]
     NOMBRE_GOLD = "ComeBackHome_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
+
+    # -------------------------------------------------------------------------
+    # PASO NUEVO: 1.5 GENERAR CAPA BRONZE PARA CONSUMO EXTERNO
+    # -------------------------------------------------------------------------
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "ComeBackHome_Raw_Bronze.parquet")
+    try:
+        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+    # -------------------------------------------------------------------------
 
     # Columnas que esperamos que vengan en el Excel
     cols_esperadas = [
@@ -40,7 +51,7 @@ def ejecutar():
             # En el Gold la columna ya se llama "Fecha"
             if not df_historico.empty and "Fecha" in df_historico.columns:
                 fecha_corte = pd.to_datetime(df_historico["Fecha"]).max()
-                console.print(f"[green]✅ Histórico detectado. Última fecha cargada: {fecha_corte}[/]")
+                console.print(f"[green]✅ Histórico detectado. Última fecha cargada: {fecha_corte.date() if pd.notnull(fecha_corte) else 'N/A'}[/]")
         except Exception as e:
             console.print(f"[yellow]⚠️ Error leyendo histórico: {e}. Se hará carga completa.[/]")
 

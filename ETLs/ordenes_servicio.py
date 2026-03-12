@@ -6,16 +6,19 @@ import glob
 import re
 import datetime
 
-# --- CONFIGURACIÓN DE RUTAS ---
+# ==========================================
+# 🔼 EL TRUCO DEL ASCENSOR 🔼
+# ==========================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import guardar_parquet, reportar_tiempo, console, limpiar_nulos_powerbi
+from utils import guardar_parquet, reportar_tiempo, console, limpiar_nulos_powerbi, archivos_raw
 
 ruta_silver = PATHS.get("silver")
 ruta_gold = PATHS.get("gold")
+ruta_bronze = PATHS.get("bronze","data/bronze")
 
 # ==========================================
 # 1. CONSTANTES DE NEGOCIO
@@ -38,11 +41,10 @@ EXCLUIR_SOLUCIONES = [
 # 2. DEFINICIÓN DE COLUMNAS
 # ==========================================
 
-# --- SILVER (Detalle Fila por Fila) ---
 ORDEN_FINAL_SILVER = [
     "Quincena Evaluada", "FechaInicio", "FechaFin", 
-    "Fecha Creacion", "Fecha Impresion", "Fecha Finalizacion",
-    "Fecha_Creacion_Date", 
+    "Fecha Apertura", "Fecha Impresion", "Fecha Cierre", 
+    "Fecha Apertura Date", "Fecha Cierre Date", 
     "Es_Falla", "Cumplio_SLA", "Duracion_Horas",
     "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min",
     "Franquicia", "Grupo Trabajo", "Grupo Afinidad", "Clasificacion",
@@ -51,23 +53,25 @@ ORDEN_FINAL_SILVER = [
     "Solucion Aplicada", "Detalle Orden", "SLA Detalle Texto"
 ]
 
-# --- GOLD SLA (Resumen Tiempos) ---
 ORDEN_FINAL_GOLD_SLA = [
-    "Quincena Evaluada", "Franquicia", "Clasificacion", "Fecha_Creacion_Date",
-    "Total_Ordenes",      # Ahora será conteo único
+    "Quincena Evaluada", "Franquicia", "Clasificacion", "Fecha Apertura Date",
+    "Total_Ordenes",      
     "SLA Resolucion Min", 
     "SLA Despacho Min",   
     "SLA Impresion Min"   
 ]
 
-# --- GOLD IDF (Resumen Fallas) ---
 ORDEN_FINAL_GOLD_IDF = [
-    "Quincena Evaluada", "Franquicia", "Fecha_Creacion_Date",
-    "Total_Fallas", 
-    "Fecha_Corte"
+    "Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date", 
+    "Total_Fallas"
 ]
 
-# --- INPUT RAW ---
+# NUEVA DEFINICIÓN: Gold Lean para DAX
+ORDEN_SLA_STATS = [
+    "Quincena Evaluada", "Franquicia", 
+    "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"
+]
+
 COLS_INPUT_RAW = [
     "FechaInicio", "FechaFin", "FechaInicioQuincena", "Quincena Evaluada",
     "N° Contrato", "Estatus contrato", "N° Orden", "Estatus_orden",
@@ -83,11 +87,18 @@ COLS_INPUT_RAW = [
 def obtener_rango_fechas(nombre_archivo):
     try:
         nombre_limpio = os.path.basename(nombre_archivo).lower()
-        patron = r"(\d{1,2}-\d{1,2}-\d{4})\s+al\s+(\d{1,2}-\d{1,2}-\d{4})"
-        match = re.search(patron, nombre_limpio)
-        if not match: return None, None, None
+        patron = r"(\d{1,2}\W\d{1,2}\W\d{4})"
+        fechas_encontradas = re.findall(patron, nombre_limpio)
 
-        str_inicio, str_fin = match.groups()
+        if len(fechas_encontradas) < 2:
+            return None, None, None
+
+        def normalizar_separador(fecha_str):
+            return re.sub(r"\W", "-", fecha_str)
+
+        str_inicio = normalizar_separador(fechas_encontradas[0])
+        str_fin = normalizar_separador(fechas_encontradas[1])
+
         f_inicio = datetime.datetime.strptime(str_inicio, "%d-%m-%Y")
         f_fin = datetime.datetime.strptime(str_fin, "%d-%m-%Y")
 
@@ -95,6 +106,7 @@ def obtener_rango_fechas(nombre_archivo):
         meses = ["", "ENE", "FEB", "MAR", "ABR", "MAY", "JUN", 
                  "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
         nombre_etiqueta = f"{meses[f_fin.month]} {f_fin.year} {quincena_str}"
+        
         return f_inicio, f_fin, nombre_etiqueta
     except Exception as e:
         console.print(f"[red]❌ Error interpretando fechas en {nombre_archivo}: {e}[/]")
@@ -114,13 +126,17 @@ def limpiar_fechas_mixtas(series):
 # ==========================================
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]PIPELINE MASTER: TICKETS (SLA + IDF + DIARIO)[/]")
+    console.rule("[bold magenta]PIPELINE MASTER: TICKETS (SLA + IDF)[/]")
 
     ruta_origen = PATHS.get("raw_idf") 
     if not ruta_origen or not os.path.exists(ruta_origen):
         console.print(f"[red]❌ Error: La ruta 'raw_idf' no existe[/]")
         return
-
+    archivo_bronze_salida = os.path.join(ruta_bronze, "Tickets_SLA_Raw_Bronze.parquet")
+    try:
+        archivos_raw(ruta_origen, archivo_bronze_salida)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
     archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
     console.print(f"📂 Se encontraron {len(archivos)} archivos. Iniciando procesamiento...")
 
@@ -145,11 +161,23 @@ def ejecutar():
 
             if "Fecha Creacion" not in df.columns: continue
 
-            mask_creacion = df["Fecha Creacion"] >= fecha_inicio
+            # -----------------------------------------------------------------
+            # --- FILTRO HÍBRIDO: FECHA DE CIERRE + BACKLOG ABIERTO ---
+            # -----------------------------------------------------------------
+            limite_inferior = fecha_fin.replace(day=fecha_inicio.day)
+            limite_superior = fecha_fin + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            
             if "Fecha Finalizacion" in df.columns:
-                 df_filtrado = df[mask_creacion].copy() 
+                mask_cerrados_aqui = (df["Fecha Finalizacion"] >= limite_inferior) & (df["Fecha Finalizacion"] <= limite_superior)
             else:
-                 df_filtrado = df[mask_creacion].copy()
+                mask_cerrados_aqui = pd.Series(False, index=df.index)
+
+            mask_nacieron_aqui = (df["Fecha Creacion"] >= limite_inferior) & (df["Fecha Creacion"] <= limite_superior)
+            mask_siguen_abiertos = df["Fecha Finalizacion"].isna() if "Fecha Finalizacion" in df.columns else pd.Series(True, index=df.index)
+            
+            mask_abiertos_aqui = mask_nacieron_aqui & mask_siguen_abiertos
+            mask_valida = mask_cerrados_aqui | mask_abiertos_aqui
+            df_filtrado = df[mask_valida].copy()
 
             if len(df_filtrado) == 0: continue
 
@@ -169,19 +197,16 @@ def ejecutar():
                 Estatus_Norm  = lambda x: x["Estatus_orden"].fillna("").astype(str).str.upper()
             )
             
-            # --- FILTROS DE EXCLUSIÓN (Mejorados) ---
+            # --- FILTROS DE EXCLUSIÓN ---
             mask_excluir = (
                 df_filtrado["Solucion_Norm"].isin(EXCLUIR_SOLUCIONES) |
                 df_filtrado["Grupo_Norm"].str.contains("GT API FIBEX", na=False) |
                 (df_filtrado["Detalle_Norm"] == "PRUEBA DE INTERNET") |
                 df_filtrado["Estatus_Norm"].str.contains("CREACIÓN", na=False) |
-                # NUEVO: Excluir explícitamente anuladas para no inflar conteo
                 df_filtrado["Estatus_Norm"].isin(["ANULADA", "CANCELADA", "ELIMINADA"])
             )
             
             df_final = df_filtrado[~mask_excluir].copy()
-            
-            # Conservamos columnas necesarias
             cols_to_keep = [c for c in COLS_INPUT_RAW if c in df_final.columns]
             dataframes_procesados.append(df_final[cols_to_keep])
             
@@ -197,6 +222,12 @@ def ejecutar():
         console.print(f"\n🔄 Consolidando {len(dataframes_procesados)} DataFrames...")
         df_total = pd.concat(dataframes_procesados, ignore_index=True)
 
+        # Estandarización de nombres
+        df_total = df_total.rename(columns={
+            "Fecha Creacion": "Fecha Apertura",
+            "Fecha Finalizacion": "Fecha Cierre"
+        })
+
         # --- CLASIFICACIÓN ---
         df_total['Grupo_Norm'] = df_total['Grupo Trabajo'].fillna('').astype(str).str.upper()
         df_total['Usuario_Norm'] = df_total['Usuario Final'].fillna('').astype(str).str.upper()
@@ -210,34 +241,50 @@ def ejecutar():
         df_total['Clasificacion'] = np.select(condiciones, ['NOC', 'NOC', 'NOC', 'OPERACIONES'], default='MESA DE CONTROL')
 
         # --- CÁLCULOS KPI ---
-        for c in ['Fecha Finalizacion', 'Fecha Creacion', 'Fecha Impresion']:
-            df_total[c] = pd.to_datetime(df_total[c], errors='coerce')
+        for c in ['Fecha Cierre', 'Fecha Apertura', 'Fecha Impresion']:
+            df_total[c] = pd.to_datetime(df_total[c], errors='coerce', dayfirst=True)
 
-        delta_res = df_total['Fecha Finalizacion'] - df_total['Fecha Creacion']
-        delta_des = df_total['Fecha Finalizacion'] - df_total['Fecha Impresion']
-        delta_imp = df_total['Fecha Impresion'] - df_total['Fecha Creacion']
+        delta_res = df_total['Fecha Cierre'] - df_total['Fecha Apertura']
+        delta_des = df_total['Fecha Cierre'] - df_total['Fecha Impresion']
+        delta_imp = df_total['Fecha Impresion'] - df_total['Fecha Apertura']
 
         df_total['SLA Resolucion Min'] = (delta_res.dt.total_seconds() / 60).round(2)
         df_total['SLA Despacho Min']   = (delta_des.dt.total_seconds() / 60).round(2)
         df_total['SLA Impresion Min']  = (delta_imp.dt.total_seconds() / 60).round(2)
         df_total['SLA Detalle Texto']  = delta_res.astype(str).replace('NaT', None)
 
-        # --- FILTRO LIMPIEZA (Negativos y Ceros) ---
-        df_total = df_total[df_total['SLA Resolucion Min'] > 0]
-
         # --- GRANULARIDAD ---
-        df_total['Fecha_Creacion_Date'] = df_total['Fecha Creacion'].dt.date
+        df_total['Fecha Apertura Date'] = df_total['Fecha Apertura'].dt.normalize()
+        df_total['Fecha Cierre Date'] = df_total['Fecha Cierre'].dt.normalize()
 
         # Métricas
         df_total['Duracion_Horas'] = (delta_res.dt.total_seconds() / 3600)
         df_total['Es_Falla'] = 1 
+
+        cols_tiempo = [
+            'SLA Resolucion Min', 
+            'SLA Despacho Min', 
+            'SLA Impresion Min', 
+            'Duracion_Horas'
+        ]
+        
+        # Enmascaramos (volvemos nulo) cualquier cálculo de tiempo que sea 0 o negativo
+        df_total[cols_tiempo] = df_total[cols_tiempo].mask(df_total[cols_tiempo] <= 0)
+
         df_total['Cumplio_SLA'] = np.where(
             (df_total['Duracion_Horas'].notna()) & (df_total['Duracion_Horas'] <= HORAS_SLA_META), 
             1, 0
         )
 
         df_total = df_total.drop(columns=['Grupo_Norm', 'Usuario_Norm'])
-        df_total = df_total.drop_duplicates()
+
+        # --- DEDUPLICACIÓN BLINDADA ---
+        df_total = df_total.sort_values(by=["Fecha Cierre"], na_position='first')
+        df_total = df_total.drop_duplicates(
+            subset=["N° Orden", "Fecha Apertura", "N° Contrato", "Detalle Orden"], 
+            keep="last"
+        )
+        
         df_total = limpiar_nulos_powerbi(df_total)
 
         # ==========================================
@@ -249,18 +296,15 @@ def ejecutar():
         df_silver_master = df_total.reindex(columns=cols_existentes_silver)
         guardar_parquet(df_silver_master, "Tickets_Silver_Master.parquet", filas_iniciales=len(df_silver_master), ruta_destino=ruta_silver)
         
-        # --- B. GOLD SLA (Agrupado por DÍA) ---
+        # --- B. GOLD SLA  ---
         df_sla_base = df_silver_master.dropna(subset=['SLA Resolucion Min'])
-        
-        # ---------------------------------------------------------------
-        # AQUÍ ESTÁ EL CAMBIO CLAVE PARA CORREGIR "TOTAL MUY ALTO" 👇
-        # Usamos "nunique" en lugar de "count" para Total_Ordenes
-        # ---------------------------------------------------------------
+        df_sla_base = df_sla_base[df_sla_base['SLA Resolucion Min'] > 0]
+
         df_gold_sla = df_sla_base.groupby(
-            ["Quincena Evaluada", "Franquicia", "Clasificacion", "Fecha_Creacion_Date"], 
+            ["Quincena Evaluada", "Franquicia", "Clasificacion", "Fecha Apertura Date"], 
             as_index=False
         ).agg(
-            Total_Ordenes=("N° Orden", "nunique"), # <--- ESTO CORRIGE LA DUPLICIDAD
+            Total_Ordenes=("N° Orden", "nunique"), 
             **{
                 "SLA Resolucion Min": ("SLA Resolucion Min", "sum"),
                 "SLA Despacho Min": ("SLA Despacho Min", "sum"),
@@ -270,31 +314,36 @@ def ejecutar():
         df_gold_sla = df_gold_sla.reindex(columns=ORDEN_FINAL_GOLD_SLA)
         guardar_parquet(df_gold_sla, "SLA_Gold.parquet", filas_iniciales=len(df_gold_sla), ruta_destino=ruta_gold)
 
-        # --- C. GOLD IDF (Agrupado por DÍA) ---
-        # Para fallas también aplicamos unicidad si lo deseas, o mantenemos sumas si quieres ver eventos
-        # Normalmente IDF es "Tickets Únicos con Falla"
+        # --- C. GOLD IDF ---
         df_gold_idf = df_silver_master.groupby(
-            ["Quincena Evaluada", "Franquicia", "Fecha_Creacion_Date"],
+            ["Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
             as_index=False
         ).agg(
-            Total_Fallas=("N° Orden", "nunique"), # <--- TAMBIÉN AQUÍ
-            Fecha_Corte=("Fecha Finalizacion", "max")
+            Total_Fallas=("N° Orden", "nunique") 
         )
         df_gold_idf = df_gold_idf.reindex(columns=ORDEN_FINAL_GOLD_IDF)
         guardar_parquet(df_gold_idf, "IDF_Gold.parquet", filas_iniciales=len(df_gold_idf), ruta_destino=ruta_gold)
 
-        console.print(f"[bold green]✨ Proceso Finalizado (Corregido Conteo Único).[/]")
-        console.print(f"   1. 🥈 Tickets_Silver_Master.parquet")
-        console.print(f"   2. 🥇 SLA_Gold.parquet (Suma Minutos / Conteo Único)")
-        console.print(f"   3. 🥇 IDF_Gold.parquet (Conteo Único)")
+        # --- D. GOLD SLA-STATS ---
+        console.print("🚀 Generando Gold: SLA-Stats (Precisión absoluta para DAX)...")
+        df_gold_stats = df_silver_master[["Quincena Evaluada", "Franquicia", "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]].copy()
         
-        # VERIFICACIÓN RÁPIDA
+        df_gold_stats = df_gold_stats.dropna(subset=['SLA Resolucion Min'])
+        df_gold_stats.loc[df_gold_stats['SLA Resolucion Min'] < 1, 'SLA Resolucion Min'] = 1
+        
+        df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
+        guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)
+
+        # VERIFICACIÓN RÁPIDA Y CÁLCULO DE BACKLOG
         total_filas_silver = len(df_silver_master)
         total_unicos = df_silver_master["N° Orden"].nunique()
-        console.print(f"\n[dim]🔍 Auditoría rápida:[/]")
-        console.print(f"   - Filas Totales (Eventos): {total_filas_silver:,}")
+        tickets_abiertos = df_silver_master["Fecha Cierre Date"].isna().sum()
+        
+        console.print(f"\n[dim]🔍 Auditoría Final:[/]")
+        console.print(f"   - Filas Finales en Silver: {total_filas_silver:,}")
         console.print(f"   - Tickets Únicos Reales:   {total_unicos:,}")
-        console.print(f"   - Diferencia (Duplicados): {total_filas_silver - total_unicos:,}")
+        console.print(f"   - Tickets Abiertos (Tu Backlog real rescatado): {tickets_abiertos:,}")
+        console.print(f"[bold green]✨ Proceso Finalizado. Capas optimizadas para Fibex.[/]")
 
     else:
         console.print("[yellow]⚠️ No se generaron datos.[/]")

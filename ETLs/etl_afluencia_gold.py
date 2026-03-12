@@ -131,7 +131,7 @@ def ejecutar(ruta_silver=None):
     if not df_historico.empty:
         df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
         # Deduplicación de seguridad (Keep Last = Prioriza la data nueva si hubo corrección)
-        subset_cols = [c for c in ["N° Abonado", "Fecha", "Hora", "Vendedor", "Oficina"] if c in df_final.columns]
+        subset_cols = [c for c in ["N° Abonado", "Fecha", "Hora", "Tipo de afluencia", "Vendedor", "Oficina"] if c in df_final.columns]
         df_final = df_final.drop_duplicates(subset=subset_cols, keep='last')
     else:
         df_final = df_nuevo

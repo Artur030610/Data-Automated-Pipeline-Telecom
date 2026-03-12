@@ -3,7 +3,7 @@ import numpy as np
 import os
 import sys
 import glob # Necesario para listar los archivos de horas
-
+from utils import standard_hours,leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas, archivos_raw
 # --- EL TRUCO DEL ASCENSOR ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -12,7 +12,6 @@ sys.path.append(parent_dir)
 
 from config import PATHS, MAPA_MESES
 # Importamos obtener_rango_fechas para leer los nombres de los archivos
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas
 
 @reportar_tiempo
 def ejecutar():
@@ -23,7 +22,12 @@ def ejecutar():
     RUTA_RAW_HORAS = PATHS["raw_horaspago"]
     NOMBRE_GOLD = "Recaudacion_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Recaudacion_Raw_Bronze.parquet")
 
+    try:
+        archivos_raw(RUTA_RAW_RECAUDACION, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
     # ---------------------------------------------------------
     # 2. INGESTA INTELIGENTE (RECAUDACIÓN)
     # ---------------------------------------------------------
@@ -167,7 +171,7 @@ def ejecutar():
     if not df_final.empty:
         filas_antes = len(df_final)
         df_final = df_final.drop_duplicates(subset=["ID Pago"], keep='last')
-        
+        df_final = standard_hours(df_final, 'Hora de Pago') # Estandarizamos la hora después de unir para evitar problemas de formato
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
 
 if __name__ == "__main__":

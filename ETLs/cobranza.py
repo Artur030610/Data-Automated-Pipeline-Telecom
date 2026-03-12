@@ -9,7 +9,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, leer_carpeta
+from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, leer_carpeta, standard_hours, archivos_raw
 
 @reportar_tiempo
 def ejecutar():
@@ -19,10 +19,15 @@ def ejecutar():
     RUTA_RAW = PATHS["raw_cobranza"]
     NOMBRE_GOLD = "Llamadas_Cobranza_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
-
-    # ---------------------------------------------------------
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Cobranza_Raw_Bronze.parquet")
+    # ARCHIVOS BRONZE
+    try:
+        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+    # -------------------------------------------------------------------------
     # 2. OBTENER FECHA DE CORTE Y PREPARAR HISTÓRICO
-    # ---------------------------------------------------------
+    # -------------------------------------------------------------------------
     fecha_corte = pd.Timestamp('1900-01-01')
     df_historico = pd.DataFrame()
 
@@ -187,7 +192,8 @@ def ejecutar():
         
         df_final = df_final.drop_duplicates(subset=cols_final_dedupe, keep='first')
         df_final = limpiar_nulos_powerbi(df_final)
-
+        df_final = standard_hours(df_final, 'Hora') # Estandarizamos la hora después de unir para evitar problemas de formato
+    
         # Guardar (Sobrescribe el archivo corrupto con el limpio)
         guardar_parquet(
             df_final, 

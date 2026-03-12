@@ -5,7 +5,6 @@ import os
 import warnings
 import time
 import datetime
-import calendar
 import re
 from functools import wraps
 from rich.console import Console
@@ -19,9 +18,67 @@ from rich.progress import (
 from rich.table import Table 
 from rich.panel import Panel 
 from config import PATHS, THEME_COLOR 
+import logging
+import time
+from functools import wraps
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 console = Console(theme=THEME_COLOR)
 warnings.simplefilter(action='ignore')
+
+
+# --- CONFIGURACIÓN DEL MOTOR DE LOGS ---
+# 1. Definir ruta relativa al archivo actual
+LOG_PATH = Path(__file__).parent / "logs" / "fibex_pipeline_audit.log"
+LOG_PATH.parent.mkdir(exist_ok=True)
+
+# 2. Configurar el "Handler" (Rotación de archivos: 1MB y guarda 3 respaldos)
+handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding='utf-8')
+formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+handler.setFormatter(formatter)
+
+# 3. Crear el objeto Logger único para Fibex
+logger = logging.getLogger("FibexAudit")
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# --- DECORADOR DE RENDIMIENTO ---
+def audit_performance(func):
+    """
+    Registra automáticamente el inicio, fin, errores y 
+    conteo de registros de cualquier función de limpieza.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        inicio = time.time()
+        
+        # Intentamos detectar cuántas filas tiene el DataFrame (si es el primer argumento)
+        filas = "N/A"
+        if args and hasattr(args[0], 'shape'):
+            filas = f"{args[0].shape[0]:,}" # Formato con comas (1,532,048)
+            
+        logger.info(f"INICIO: [{func.__name__}] | Registros: {filas}")
+        
+        try:
+            resultado = func(*args, **kwargs)
+            
+            fin = time.time()
+            duracion = fin - inicio
+            logger.info(f"EXITO:  [{func.__name__}] | Duración: {duracion:.2f}s")
+            
+            # También lo mandamos a la consola para que tú lo veas en vivo
+            # Nota: console es el objeto de Rich que ya tienes en tu utils
+            # console.print(f"[dim white]   ∟ Logger: {func.__name__} finalizado en {duracion:.2f}s[/]")
+            
+            return resultado
+            
+        except Exception as e:
+            # Si algo explota, el log guarda el rastro antes de que el script se detenga
+            logger.error(f"FALLO:  [{func.__name__}] | Error: {str(e)}", exc_info=True)
+            raise e 
+            
+    return wrapper
 
 # --- DECORADOR CRONÓMETRO ---
 def reportar_tiempo(func):
@@ -34,6 +91,75 @@ def reportar_tiempo(func):
         console.print(f"[bold yellow]⏱️ Tiempo total bloque: {duration:.2f} segundos[/]\n")
         return result
     return wrapper
+
+import polars as pl
+import glob
+import os
+
+@audit_performance
+def archivos_raw(ruta_raw, ruta_destino_parquet):
+    """
+    Extrae Excels crudos y los consolida en un único Parquet (Capa Bronze).
+    Usa Polars y Calamine para máximo rendimiento. No altera los datos. Busca
+    reproducir la fuente de la verdad tal cual está en los Excels.
+    """
+    archivos = glob.glob(os.path.join(ruta_raw, "*.xlsx"))
+    archivos_validos = [
+        f for f in archivos 
+        if not os.path.basename(f).startswith("~$")
+    ]
+    
+    if not archivos_validos:
+        if not archivos:
+            console.print(f"[yellow]⚠️ La carpeta {ruta_raw} está totalmente vacía.[/]")
+        else:
+            console.print(f"[yellow]⚠️ No hay archivos válidos en {ruta_raw} (solo hay temporales abiertos).[/]")
+        return False
+        
+    console.print(f"[bold cyan]🥉 Iniciando consolidación Bronze (RAW) de {len(archivos)} archivos con Polars...[/]")
+    
+    dfs = []
+    for archivo in archivos:
+        nombre = os.path.basename(archivo)
+        try:
+            # infer_schema_length=0 lee todo como texto para evitar que el script 
+            # colapse si un Excel trae un número y otro trae un texto en la misma columna.
+            df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0)
+            
+            # Agregamos la metadata del origen (siempre es buena práctica)
+            df = df.with_columns(pl.lit(nombre).alias("Source.Name"))
+            
+            dfs.append(df)
+        except Exception as e:
+            logger.error(f"Error leyendo {nombre} en consolidación Bronze: {e}")
+            console.print(f"[warning]⚠️ Error leyendo {nombre}: {e}[/]")
+
+    if not dfs:
+        return False
+
+    try:
+        # how="diagonal" une los archivos aunque uno tenga una columna extra que el otro no
+        df_bronze = pl.concat(dfs, how="diagonal")
+        
+        # Asegurar que la ruta exista
+        os.makedirs(os.path.dirname(ruta_destino_parquet), exist_ok=True)
+        
+        # Guardar comprimido
+        df_bronze.write_parquet(ruta_destino_parquet, compression="snappy")
+        
+        filas = df_bronze.height
+        nombre_salida = os.path.basename(ruta_destino_parquet)
+        
+        # Usamos tu formato exacto de logs
+        logger.info(f"DATA_QUALITY | BRONZE: {nombre_salida} | Guardadas: {filas:,}")
+        console.print(f"[bold green]✅ ARCHIVO BRONZE GENERADO: {nombre_salida} ({filas:,} filas)[/]")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"FALLO CRÍTICO CONCATENANDO BRONZE: {str(e)}", exc_info=True)
+        console.print(f"[bold red]❌ FALLO CRÍTICO en Bronze: {e}[/]")
+        raise
 
 # --- LECTURA (MEJORADA CON VALIDACIÓN) ---
 def leer_carpeta(ruta_carpeta=None, filtro_exclusion=None, columnas_esperadas=None, dtype=None, archivos_especificos=None):
@@ -113,6 +239,7 @@ def leer_carpeta(ruta_carpeta=None, filtro_exclusion=None, columnas_esperadas=No
                 
                 # Metadata indispensable
                 df["Source.Name"] = nombre 
+                df["fecha_mod_archivo"] = os.path.getmtime(archivo)
                 lista_dfs.append(df)
 
             except Exception as e:
@@ -270,87 +397,104 @@ def limpiar_ids_documentos(df, columnas):
         
     return df_out
 
-# --- GUARDADO (SILVER/GOLD) ---
 def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None):
     """
     Guarda el archivo en Parquet asegurando compatibilidad con Power BI.
-    Incluye lógica 'Anti-Lock' para evitar errores de archivo abierto en Windows.
+    Incluye registro en LOG para auditoría de calidad de datos.
     """
     if df.empty:
+        logger.warning(f"Dataset vacío: {nombre_archivo}. Se omitió el guardado.")
         console.print(f"[warning]⚠️ Dataset vacío para {nombre_archivo}. Omitido.[/]")
         return
 
     # --- LÓGICA DE RUTAS ---
     if ruta_destino:
         carpeta_salida = ruta_destino
-        # Si la ruta_destino incluye el nombre del archivo, extraemos solo la carpeta
         if nombre_archivo in ruta_destino:
             carpeta_salida = os.path.dirname(ruta_destino)
             ruta_salida = ruta_destino
         else:
             ruta_salida = os.path.join(carpeta_salida, nombre_archivo)
     else:
-        # Comportamiento por defecto: Ir a Gold
         carpeta_salida = PATHS.get("gold", "data/gold")
         ruta_salida = os.path.join(carpeta_salida, nombre_archivo)
 
-    # 2. Creamos la carpeta si no existe
     os.makedirs(carpeta_salida, exist_ok=True)
     
     try:
-        # --- FIX: ELIMINACIÓN PREVIA (EVITA WINERROR 183 y PERMISSION ERROR) ---
+        # --- LÓGICA ANTI-LOCK ---
         if os.path.exists(ruta_salida):
             try:
                 os.remove(ruta_salida)
-                # console.print(f"[dim]🗑️  Archivo previo eliminado: {nombre_archivo}[/]")
             except PermissionError:
+                logger.error(f"ARCHIVO BLOQUEADO: {nombre_archivo} está abierto en otro programa.")
                 console.print(Panel(
                     f"[bold red]❌ ERROR CRÍTICO: ARCHIVO BLOQUEADO[/]\n"
-                    f"El archivo [cyan]{nombre_archivo}[/] está abierto en otro programa (Power BI/Excel).\n"
+                    f"El archivo [cyan]{nombre_archivo}[/] está abierto en otro programa.\n"
                     f"⚠️  Ciérralo e intenta de nuevo.",
-                    title="ACCESO DENEGADO",
-                    style="red"
+                    title="ACCESO DENEGADO", style="red"
                 ))
-                raise # Re-lanzamos el error para detener el script si es necesario
+                raise 
             except Exception as e:
-                console.print(f"[red]⚠️ Advertencia: No se pudo eliminar el archivo anterior. Razón: {e}[/]")
+                logger.warning(f"No se pudo eliminar previo en {nombre_archivo}: {e}")
 
         # --- LIMPIEZA PARA POWER BI ---
-        # Convierte objetos a string para evitar conflictos en PBI
         for col in df.select_dtypes(include=['object']).columns:
             df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) and x != "" else None)
             
+        # GUARDADO FÍSICO
         df.to_parquet(ruta_salida, index=False)
         
-        # --- REPORTE VISUAL ---
+        # --- REPORTE Y AUDITORÍA ---
         filas_finales = len(df)
         
+        # Determinamos el tipo para el reporte
+        tipo = "CUSTOM"
+        if PATHS.get("silver") and PATHS.get("silver") in ruta_salida: tipo = "SILVER"
+        if PATHS.get("gold") and PATHS.get("gold") in ruta_salida: tipo = "GOLD"
+
         if filas_iniciales is not None:
             filas_eliminadas = filas_iniciales - filas_finales
             
+            # REGISTRO EN LOG (Auditoría de Calidad)
+            logger.info(f"DATA_QUALITY | {tipo}: {nombre_archivo} | Leídas: {filas_iniciales:,} | Eliminadas: {filas_eliminadas:,} | Guardadas: {filas_finales:,}")
+            
+            # REPORTE VISUAL (Rich)
             grid = Table.grid(padding=(0, 2))
             grid.add_column(justify="left", style="cyan")
             grid.add_column(justify="left", style="bold white")
-            
             grid.add_row("📥 Filas Leídas:", f"{filas_iniciales:,}")
             grid.add_row("🧹 Filas Eliminadas:", f"[red]- {filas_eliminadas:,}[/]")
             grid.add_row("💾 Filas Guardadas:", f"[green]{filas_finales:,}[/]")
             
-            # Detectamos visualmente dónde cayó para el log
-            tipo = "CUSTOM"
-            if PATHS.get("silver") and PATHS.get("silver") in ruta_salida: tipo = "SILVER"
-            if PATHS.get("gold") and PATHS.get("gold") in ruta_salida: tipo = "GOLD"
-            
             console.print(grid)
             console.print(f"[bold green]✅ ARCHIVO {tipo} GENERADO: {nombre_archivo}[/]")
-            console.print(f"   📂 Ruta: {ruta_salida}")
             
         else:
+            logger.info(f"DATA_QUALITY | {tipo}: {nombre_archivo} | Guardadas: {filas_finales:,} (Carga simple)")
             console.print(f"[bold green]✅ GUARDADO: {nombre_archivo} ({filas_finales:,} filas)[/]")
-            
+
     except Exception as e:
+        logger.error(f"FALLO CRÍTICO GUARDANDO {nombre_archivo}: {str(e)}", exc_info=True)
         console.print(f"[bold red]❌ FALLO GUARDANDO {nombre_archivo}: {e}[/]")
-        raise # Importante hacer raise para que el script principal sepa que falló
+        raise
+    
+def standard_hours(df, columna_hora):
+    """
+    Limpia el formato del ERP (a. m. / p. m.) y estandariza a bloques de 1 hora.
+    """
+    # 1. Limpieza robusta de strings (puntos y espacios)
+    df[columna_hora] = (df[columna_hora]
+                        .astype(str).str.lower()
+                        .str.replace('.', '', regex=False)
+                        .str.replace(' ', '', regex=False)
+                        .str.strip())
+    
+    # 2. Conversión a objeto datetime y luego a string HH:00
+    df[columna_hora] = (pd.to_datetime(df[columna_hora], errors='coerce')
+                        .dt.strftime('%H:00')
+                        .fillna('Sin Registro'))
+    return df
 
 def tiempo(tiempo_inicio):
     """
