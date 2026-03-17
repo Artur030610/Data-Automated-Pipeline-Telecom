@@ -3,11 +3,18 @@ import re
 import os
 import glob
 from datetime import datetime
+import sys
+
+# --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from config import PATHS
 from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, archivos_raw
 
 # =============================================================================
-# 1. CONFIGURACIÓN DE FILTROS (Mantenida)
+# 1. CONFIGURACIÓN DE FILTROS
 # =============================================================================
 KEYWORDS_NO_HUMANOS = [
     r'\bINTERCOM\b', r'\bINVERSIONES\b', r'\bSOLUCIONES\b', 
@@ -49,59 +56,43 @@ def extraer_fecha_archivo(nombre_archivo):
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]👤 ETL: MAESTRO DE EMPLEADOS (INCREMENTAL SCD DINÁMICO)[/]")
+    console.rule("[bold magenta]👤 ETL: MAESTRO DE EMPLEADOS (SCD FULL REFRESH BLINDADO)[/]")
 
     RUTA_RAW = PATHS["raw_empleados"]
     NOMBRE_GOLD = "Maestro_Empleados_Gold.parquet"
-    # Buscamos la ruta en config, si no existe usamos una por defecto
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", ""), NOMBRE_GOLD)
     RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Maestro_Empleados_Raw_Bronze.parquet")
 
+    # Respaldamos la raw en bronze para mantener la arquitectura
     try:
         archivos_raw(RUTA_RAW, RUTA_BRONZE)
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
-    # ---------------------------------------------------------
-    # 1. DETECCIÓN INCREMENTAL
-    # ---------------------------------------------------------
-    archivos_todos = glob.glob(os.path.join(RUTA_RAW, "*.xlsx"))
-    archivos_a_leer = []
-    df_historico = pd.DataFrame()
-    fecha_corte = pd.Timestamp('1900-01-01')
 
-    if os.path.exists(RUTA_GOLD_COMPLETA):
-        try:
-            df_historico = pd.read_parquet(RUTA_GOLD_COMPLETA)
-            if not df_historico.empty and 'Fecha_Inicio' in df_historico.columns:
-                # Usamos Fecha_Inicio para saber cuál fue el último archivo procesado
-                fecha_corte = pd.to_datetime(df_historico['Fecha_Inicio'], errors='coerce').max()
-                console.print(f"[green]✅ Histórico cargado. Última versión: {fecha_corte.date()}[/]")
-        except Exception as e:
-            console.print(f"[yellow]⚠️ Error leyendo histórico ({e}). Se procesará todo de nuevo.[/]")
-
-    for arch in archivos_todos:
-        if "Consolidado" in arch or "~$" in arch: continue
-        f_arch = pd.Timestamp(extraer_fecha_archivo(arch))
-        if f_arch > fecha_corte:
-            archivos_a_leer.append(arch)
+    # ---------------------------------------------------------
+    # 1. LECTURA TOTAL ORDENADA (Protección de Integridad)
+    # ---------------------------------------------------------
+    # sorted() obliga a que los Excels se lean en orden cronológico/alfabético
+    archivos_todos = sorted(glob.glob(os.path.join(RUTA_RAW, "*.xlsx")))
+    archivos_a_leer = [arch for arch in archivos_todos if "Consolidado" not in arch and "~$" not in arch]
 
     if not archivos_a_leer:
-        console.print("[bold green]✅ El Maestro ya está actualizado.[/]")
+        console.print("[bold green]✅ No hay archivos para procesar en la carpeta.[/]")
         return
 
-    # ---------------------------------------------------------
-    # 2. CARGA Y TRANSFORMACIONES ORIGINALES
-    # ---------------------------------------------------------
-    console.print(f"[cyan]🚀 Procesando {len(archivos_a_leer)} archivos nuevos...[/]")
+    console.print(f"[cyan]🚀 Procesando {len(archivos_a_leer)} archivos desde cero para reconstruir historia...[/]")
     df_nuevo = leer_carpeta(archivos_especificos=archivos_a_leer)
     
     if df_nuevo.empty: return
 
+    # ---------------------------------------------------------
+    # 2. TRANSFORMACIONES Y LIMPIEZA
+    # ---------------------------------------------------------
     # Inyectamos la fecha del nombre como Fecha_Inicio
     df_nuevo['Fecha_Inicio'] = df_nuevo['Source.Name'].apply(extraer_fecha_archivo)
     df_nuevo['Fecha_Inicio'] = pd.to_datetime(df_nuevo['Fecha_Inicio'], errors='coerce')
 
-    # Renombrado y Normalización (Tu lógica original)
+    # Renombrado y Normalización
     df_nuevo.columns = df_nuevo.columns.str.strip().str.title()
     mapa_renombre = {
         "Nombre": "Nombre_Completo", 
@@ -121,17 +112,17 @@ def ejecutar():
     # Creación del 'Combinado' para identidad única (Persona + Ubicación)
     df_nuevo["Combinado"] = (df_nuevo["Nombre_Completo"] + " " + df_nuevo["OficinaSae"]).str.strip()
 
+    # --- PROTECCIÓN CONTRA ACTUALIZACIONES DE LA TARDE ---
+    # Si hay 2 archivos del mismo día, nos quedamos con la última versión leída
+    df_unificado = df_nuevo.drop_duplicates(subset=["Doc_Identidad", "Combinado", "Fecha_Inicio"], keep='last').copy()
+
     # ---------------------------------------------------------
     # 3. LÓGICA DE DIMENSIÓN DINÁMICA (SCD)
     # ---------------------------------------------------------
-    # Unimos lo nuevo con lo viejo
-    df_unificado = pd.concat([df_historico, df_nuevo], ignore_index=True)
-
-    # Ordenamos para procesar las vigencias
+    # Ordenamos para procesar las vigencias en la línea de tiempo
     df_unificado.sort_values(by=["Combinado", "Fecha_Inicio"], ascending=[True, True], inplace=True)
 
     # Generamos la 'Fecha_Fin': es la Fecha_Inicio del siguiente registro para ese mismo 'Combinado'
-    # Si es el último registro, la Fecha_Fin será nula (Vigente)
     df_unificado['Fecha_Fin'] = df_unificado.groupby('Combinado')['Fecha_Inicio'].shift(-1)
 
     # Columna de estado para Power BI
@@ -149,7 +140,7 @@ def ejecutar():
     df_final = limpiar_nulos_powerbi(df_final)
 
     console.print(f"[green]✔ Maestro actualizado. Total registros (vigentes + históricos): {len(df_final)}[/]")
-    guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_nuevo))
+    guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final), ruta_destino=PATHS.get("gold", ""))
 
 if __name__ == "__main__":
     ejecutar()

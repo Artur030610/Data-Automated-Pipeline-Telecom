@@ -3,8 +3,8 @@ import numpy as np
 import os
 from config import PATHS, LISTA_VENDEDORES_OFICINA, LISTA_VENDEDORES_PROPIOS, MAPA_MESES
 from utils import (
-    leer_carpeta, guardar_parquet, reportar_tiempo, console, 
-    ingesta_inteligente, ingesta_incremental_polars 
+    guardar_parquet, reportar_tiempo, console, 
+    ingesta_incremental_polars 
 )
 
 # --- LÓGICA DE CLASIFICACIÓN (Mantenida 100% igual) ---

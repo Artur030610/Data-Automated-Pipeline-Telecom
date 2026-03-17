@@ -2,9 +2,16 @@ import pandas as pd
 from rapidfuzz import process, fuzz
 import re
 import os
+import sys
 from unidecode import unidecode
+
+# --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from config import PATHS, MAPA_MESES
-from utils import guardar_parquet, reportar_tiempo, console, ingesta_inteligente
+from utils import guardar_parquet, reportar_tiempo, console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 # =============================================================================
@@ -30,8 +37,7 @@ def normalize_text(text):
     return ""
 
 def preparar_maestro_gold_blindado(df):
-    if df.empty: return {}, []
-    if 'Nombre_Completo' not in df.columns: return {}, []
+    if df.empty or 'Nombre_Completo' not in df.columns: return {}, []
     
     mask_humanos = ~df['Nombre_Completo'].astype(str).str.contains(PATRON_NO_HUMANO, regex=True, na=False)
     df_humanos = df[mask_humanos].copy()
@@ -60,9 +66,12 @@ def preparar_universo(df):
     mapa_ofi = dict(zip(nombres, df['Oficina']))
     return mapa_ofi, list(mapa_ofi.keys())
 
+# =============================================================================
+# 2. EJECUCIÓN DEL PIPELINE (MODO FULL REFRESH)
+# =============================================================================
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]4. ETL SILVER: MATCHING BLINDADO (INCREMENTAL)[/]")
+    console.rule("[bold magenta]4. ETL SILVER: MATCHING BLINDADO (MODO FULL REFRESH)[/]")
     
     # --- DEFINICIÓN DE RUTAS ---
     nombre_archivo_silver = "Afluencia_Consolidada_Silver.parquet"
@@ -80,21 +89,8 @@ def ejecutar():
         "Recaudacion": os.path.join(PATHS["gold"], "Recaudacion_Gold.parquet")
     }
 
-    # --- PASO 1: DETECCIÓN INCREMENTAL ---
-    fecha_corte_global = None
-    df_historico_silver = pd.DataFrame()
-
-    if os.path.exists(ruta_silver_destino):
-        try:
-            df_fechas = pd.read_parquet(ruta_silver_destino, columns=["Fecha"])
-            if not df_fechas.empty:
-                fecha_corte_global = pd.to_datetime(df_fechas["Fecha"]).max()
-                console.print(f"[green]✅ Última fecha en Silver: {fecha_corte_global.date()}[/]")
-            df_historico_silver = pd.read_parquet(ruta_silver_destino)
-        except Exception as e:
-            console.print(f"[yellow]⚠️ Reconstruyendo Silver: {e}[/]")
-
-    dfs_nuevos = []
+    # --- PASO 1: LECTURA TOTAL DE FUENTES ---
+    dfs_all = []
     for origen, ruta in files.items():
         if os.path.exists(ruta):
             try:
@@ -103,23 +99,18 @@ def ejecutar():
                     if col not in df_source.columns: df_source[col] = None
                 
                 df_source = df_source[cols_necesarias].copy()
-                df_source["Fecha"] = pd.to_datetime(df_source["Fecha"], dayfirst=True, errors="coerce")
+                dfs_all.append(df_source)
+                console.print(f"   🔹 {origen}: {len(df_source)} registros cargados.")
+            except Exception as e:
+                console.print(f"[red]❌ Error cargando {origen}: {e}[/]")
 
-                if fecha_corte_global:
-                    df_delta = df_source[df_source["Fecha"] > fecha_corte_global].copy()
-                    if not df_delta.empty:
-                        console.print(f"   🔹 {origen}: {len(df_delta)} registros nuevos.")
-                        dfs_nuevos.append(df_delta)
-                else:
-                    dfs_nuevos.append(df_source)
-            except Exception: pass
-
-    if not dfs_nuevos:
-        console.print("[bold green]✅ Silver Consolidado al día.[/]")
+    if not dfs_all:
+        console.print("[bold red]❌ No hay datos origen para procesar.[/]")
         return ruta_silver_destino
 
-    df_a_procesar = pd.concat(dfs_nuevos, ignore_index=True)
-    df_a_procesar["Mes"] = df_a_procesar["Fecha"].dt.month.map(MAPA_MESES).str.lower()
+    df_total = pd.concat(dfs_all, ignore_index=True)
+    df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce")
+    df_total["Mes"] = df_total["Fecha"].dt.month.map(MAPA_MESES).str.lower()
     
     # --- PASO 2: MATCHING INTELIGENTE ---
     path_maestro = os.path.join(PATHS["gold"], "Maestro_Empleados_Gold.parquet")
@@ -130,43 +121,44 @@ def ejecutar():
     mapa_gold, lista_gold = preparar_maestro_gold_blindado(df_maestro)
     mapa_univ, lista_univ = preparar_universo(df_univ)
     
-    df_a_procesar['Vendedor_Clean'] = df_a_procesar['Vendedor'].fillna('').astype(str).apply(normalize_text)
-    vendedores_unicos = [v for v in df_a_procesar['Vendedor_Clean'].unique() if len(v) > 2]
+    df_total['Vendedor_Clean'] = df_total['Vendedor'].fillna('').astype(str).apply(normalize_text)
+    vendedores_unicos = [v for v in df_total['Vendedor_Clean'].unique() if len(v) > 2]
     
     resultados = {}
-    for vend in vendedores_unicos:
-        oficina_asignada = None
-        if lista_gold:
-            candidates = process.extract(vend, lista_gold, scorer=fuzz.token_set_ratio, limit=3)
-            top = [c for c in candidates if c[1] >= 95]
-            if top: oficina_asignada = mapa_gold.get(max(top, key=lambda x: (x[1], len(x[0])))[0])
-        
-        if not oficina_asignada and lista_univ:
-            candidates_univ = process.extract(vend, lista_univ, scorer=fuzz.token_set_ratio, limit=3)
-            top_u = [c for c in candidates_univ if c[1] >= 95]
-            if top_u: oficina_asignada = mapa_univ.get(max(top_u, key=lambda x: (x[1], len(x[0])))[0])
-        
-        if not oficina_asignada:
-            vu = vend.upper()
-            if any(x in vu for x in ["INTERCOM", "INVERSIONES", "SOLUCIONES", "TECNOLOGIA", "AGENTE", "COMERCIALIZADORA", "TROMP"]):
-                oficina_asignada = "ALIADO / AGENTE"
-            elif "CALLE" in vu: oficina_asignada = "FUERZA DE VENTA EXTERNA"
-            elif "TELEVENTAS" in vu or "CALL CENTER" in vu: oficina_asignada = "TELEVENTAS / CALL CENTER"
-        
-        if oficina_asignada: resultados[vend] = oficina_asignada
+    with console.status("[blue]Ejecutando Matching de Vendedores con RapidFuzz...[/]"):
+        for vend in vendedores_unicos:
+            oficina_asignada = None
+            if lista_gold:
+                candidates = process.extract(vend, lista_gold, scorer=fuzz.token_set_ratio, limit=3)
+                top = [c for c in candidates if c[1] >= 95]
+                if top: oficina_asignada = mapa_gold.get(max(top, key=lambda x: (x[1], len(x[0])))[0])
+            
+            if not oficina_asignada and lista_univ:
+                candidates_univ = process.extract(vend, lista_univ, scorer=fuzz.token_set_ratio, limit=3)
+                top_u = [c for c in candidates_univ if c[1] >= 95]
+                if top_u: oficina_asignada = mapa_univ.get(max(top_u, key=lambda x: (x[1], len(x[0])))[0])
+            
+            if not oficina_asignada:
+                vu = vend.upper()
+                if any(x in vu for x in ["INTERCOM", "INVERSIONES", "SOLUCIONES", "TECNOLOGIA", "AGENTE", "COMERCIALIZADORA", "TROMP"]):
+                    oficina_asignada = "ALIADO / AGENTE"
+                elif "CALLE" in vu: oficina_asignada = "FUERZA DE VENTA EXTERNA"
+                elif any(x in vu for x in ["TELEVENTAS", "CALL CENTER"]): 
+                    oficina_asignada = "TELEVENTAS / CALL CENTER"
+            
+            if oficina_asignada: resultados[vend] = oficina_asignada
 
-    df_a_procesar['Oficina'] = df_a_procesar['Vendedor_Clean'].map(resultados).combine_first(df_a_procesar['Oficina'])
-    df_a_procesar.drop(columns=['Vendedor_Clean'], inplace=True)
+    df_total['Oficina'] = df_total['Vendedor_Clean'].map(resultados).combine_first(df_total['Oficina'])
+    df_total.drop(columns=['Vendedor_Clean'], inplace=True)
 
-    # --- PASO 3: UNIFICACIÓN Y GUARDADO ---
-    if not df_historico_silver.empty:
-        df_final = pd.concat([df_historico_silver, df_a_procesar], ignore_index=True)
-        subset_cols = ["N° Abonado", "Fecha", "Hora", "Tipo de afluencia", "Vendedor"]
-        df_final = df_final.drop_duplicates(subset=[c for c in subset_cols if c in df_final.columns], keep='last')
-    else:
-        df_final = df_a_procesar
+    # --- PASO 3: DEDUPLICACIÓN Y GUARDADO ---
+    subset_cols = ["N° Abonado", "Fecha", "Hora", "Tipo de afluencia", "Vendedor"]
+    df_final = df_total.drop_duplicates(subset=[c for c in subset_cols if c in df_total.columns], keep='last')
 
     guardar_parquet(df_final, nombre_archivo_silver, filas_iniciales=len(df_final), ruta_destino=PATHS["silver"])
+    console.print(f"[bold green]✨ Silver Consolidado generado: {len(df_final):,} registros únicos.[/]")
     
-    # Retorno vital para el orquestador
     return ruta_silver_destino
+
+if __name__ == "__main__":
+    ejecutar()

@@ -9,161 +9,122 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-# IMPORTANTE: Agregamos archivos_raw a las importaciones
-from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, leer_carpeta, archivos_raw
+from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, standard_hours, ingesta_incremental_polars
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]🏠 ETL: CAMPAÑA COME BACK HOME (INCREMENTAL)[/]")
+    console.rule("[bold magenta]🏠 ETL: CAMPAÑA COME BACK HOME (POLARS BRONZE + PANDAS GOLD)[/]")
     
     # 1. Configuración y Rutas
     RUTA_RAW = PATHS["raw_comeback"]
     NOMBRE_GOLD = "ComeBackHome_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
-
-    # -------------------------------------------------------------------------
-    # PASO NUEVO: 1.5 GENERAR CAPA BRONZE PARA CONSUMO EXTERNO
-    # -------------------------------------------------------------------------
     RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "ComeBackHome_Raw_Bronze.parquet")
-    try:
-        archivos_raw(RUTA_RAW, RUTA_BRONZE)
-    except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
+
     # -------------------------------------------------------------------------
-
-    # Columnas que esperamos que vengan en el Excel
-    cols_esperadas = [
-        "N° Abonado", "Documento", "Cliente", "Estatus", "Saldo", 
-        "Fecha Llamada", "Hora Llamada", "Tipo Llamada", "Tipo Respuesta", 
-        "Detalle Respuesta", "Responsable", "Suscripción", "Grupo Afinidad", 
-        "Franquicia", "Ciudad", "Observación", "Teléfono", "Detalle Suscripcion"
-    ]
-
+    # 2. INGESTA BRONZE (POLARS - UPSERT POR FECHA)
     # ---------------------------------------------------------
-    # 2. DETECCIÓN DE FECHA DE CORTE (DEL HISTÓRICO)
-    # ---------------------------------------------------------
-    fecha_corte = pd.Timestamp('1900-01-01')
-    df_historico = pd.DataFrame()
-
-    if os.path.exists(RUTA_GOLD_COMPLETA):
-        try:
-            df_historico = pd.read_parquet(RUTA_GOLD_COMPLETA)
-            # En el Gold la columna ya se llama "Fecha"
-            if not df_historico.empty and "Fecha" in df_historico.columns:
-                fecha_corte = pd.to_datetime(df_historico["Fecha"]).max()
-                console.print(f"[green]✅ Histórico detectado. Última fecha cargada: {fecha_corte.date() if pd.notnull(fecha_corte) else 'N/A'}[/]")
-        except Exception as e:
-            console.print(f"[yellow]⚠️ Error leyendo histórico: {e}. Se hará carga completa.[/]")
-
-    # ---------------------------------------------------------
-    # 3. LECTURA Y FILTRADO (POR CONTENIDO)
-    # ---------------------------------------------------------
-    console.print("[cyan]📂 Escaneando archivos Raw...[/]")
-    df_nuevo = leer_carpeta(
-        RUTA_RAW, 
-        filtro_exclusion="Consolidado",
-        columnas_esperadas=cols_esperadas
+    console.print("[cyan]🚀 Fase 1: Actualizando capa Bronze con Polars...[/]")
+    # Delega la lectura de Excel, extracción de fechas y borrado/inserción inteligente a Polars
+    ingesta_exitosa = ingesta_incremental_polars(
+        ruta_raw=RUTA_RAW, 
+        ruta_bronze_historico=RUTA_BRONZE, 
+        columna_fecha="Fecha Llamada"
     )
-    
-    if df_nuevo.empty:
-        console.print("[red]❌ No hay datos para procesar.[/]")
+
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[bold red]❌ No existe archivo Bronze para procesar el Gold.[/]")
         return
 
-    # A. Normalización previa (Evita error si falta columna fecha)
-    if "Fecha Llamada" not in df_nuevo.columns:
-        console.print("[red]❌ Error Crítico: No se encuentra la columna 'Fecha Llamada' en los archivos nuevos.[/]")
+    # -------------------------------------------------------------------------
+    # 3. LECTURA DESDE BRONZE (PANDAS - LECTURA ATÓMICA)
+    # ---------------------------------------------------------
+    console.print("[cyan]🚀 Fase 2: Construyendo Gold desde Bronze...[/]")
+    try:
+        df_total = pd.read_parquet(RUTA_BRONZE)
+    except Exception as e:
+        console.print(f"[bold red]❌ Error leyendo Bronze: {e}[/]")
         return
 
-    # B. Filtro Incremental
-    # Convertimos la fecha del Excel temporalmente para comparar
-    df_nuevo["Fecha_Temp"] = pd.to_datetime(df_nuevo["Fecha Llamada"], dayfirst=True, errors='coerce')
-    
-    # Nos quedamos solo con lo nuevo (> fecha_corte)
-    df_nuevo = df_nuevo[df_nuevo["Fecha_Temp"] > fecha_corte].copy()
-    df_nuevo = df_nuevo.drop(columns=["Fecha_Temp"])
-
-    if df_nuevo.empty:
-        console.print("[bold green]✅ Campaña CBH al día. No hay registros nuevos.[/]")
+    if df_total.empty:
+        console.print("[yellow]⚠️ El Bronze está vacío.[/]")
         return
 
     # ---------------------------------------------------------
-    # 4. TRANSFORMACIÓN (SOLO LOTE NUEVO)
+    # 4. TRANSFORMACIÓN Y LIMPIEZA TOTAL
     # ---------------------------------------------------------
-    console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} registros nuevos...[/]")
-    filas_raw = len(df_nuevo)
+    console.print(f"[cyan]🛠️ Transformando {len(df_total)} registros totales...[/]")
 
-    # Renombres (Estandarización)
-    df_nuevo = df_nuevo.rename(columns={
-        "Fecha Llamada": "Fecha", 
-        "Hora Llamada": "Hora",
-        "Franquicia": "Nombre Franquicia" 
-    })
+    with console.status("[bold green]Procesando reglas de negocio...[/]", spinner="dots"):
+        # A. Renombres (Estandarización)
+        df_total = df_total.rename(columns={
+            "Fecha Llamada": "Fecha", 
+            "Hora Llamada": "Hora",
+            "Franquicia": "Nombre Franquicia" 
+        })
 
-    # Limpieza de Tipos
-    df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce")
-    
-    # Limpieza de ID (Robusta)
-    # Quita .0, quita espacios, convierte nulos a cadena vacía
-    if "N° Abonado" in df_nuevo.columns:
-        df_nuevo["N° Abonado"] = df_nuevo["N° Abonado"].astype(str).str.strip()
-        df_nuevo["N° Abonado"] = df_nuevo["N° Abonado"].str.replace(r'\.0$', '', regex=True)
-        df_nuevo["N° Abonado"] = df_nuevo["N° Abonado"].replace({'nan': '', 'None': '', 'NaT': ''})
+        # B. Limpieza de Tipos y Fechas
+        # Validamos formato y eliminamos fechas futuras imposibles
+        df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce")
+        limite_futuro = pd.Timestamp.now() + pd.Timedelta(days=1)
+        mask_errores = df_total["Fecha"] > limite_futuro
+        if mask_errores.any():
+            console.print(f"[yellow]⚠️ Se descartaron {mask_errores.sum()} registros con fecha futura (Error DD/MM).[/]")
+            df_total = df_total[~mask_errores]
 
-    # Limpieza de Textos (Mayúsculas)
-    cols_texto = ["Cliente", "Tipo Respuesta", "Detalle Respuesta", "Responsable", "Ciudad", "Nombre Franquicia", "Grupo Afinidad"]
-    for col in cols_texto:
-        if col in df_nuevo.columns:
-            df_nuevo[col] = df_nuevo[col].astype(str).str.upper().str.strip()
+        # C. Limpieza de ID (Robusta)
+        if "N° Abonado" in df_total.columns:
+            df_total["N° Abonado"] = df_total["N° Abonado"].astype(str).str.strip()
+            df_total["N° Abonado"] = df_total["N° Abonado"].str.replace(r'\.0$', '', regex=True)
+            df_total["N° Abonado"] = df_total["N° Abonado"].replace({'nan': '', 'None': '', 'NaT': ''})
 
-    # Enriquecimiento
-    df_nuevo["Tipo de afluencia"] = "COME BACK HOME"
+        # D. Limpieza de Textos (Mayúsculas)
+        cols_texto = ["Cliente", "Tipo Respuesta", "Detalle Respuesta", "Responsable", "Ciudad", "Nombre Franquicia", "Grupo Afinidad"]
+        for col in cols_texto:
+            if col in df_total.columns:
+                df_total[col] = df_total[col].astype(str).str.upper().str.strip()
 
-    # Selección de Columnas Finales
-    cols_finales = [
-        "Source.Name", "N° Abonado", "Documento", "Cliente", "Estatus", 
-        "Fecha", "Hora", "Tipo Respuesta", "Detalle Respuesta", 
-        "Responsable", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
-        "Ciudad", "Tipo de afluencia"
-    ]
-    
-    # Reindex para garantizar estructura (rellena con NaN si falta algo)
-    df_nuevo = df_nuevo.reindex(columns=cols_finales)
-    
-    # Deduplicación del lote nuevo
-    df_nuevo = df_nuevo.drop_duplicates()
+        # E. Enriquecimiento
+        df_total["Tipo de afluencia"] = "COME BACK HOME"
 
-    # ---------------------------------------------------------
-    # 5. UNIFICACIÓN Y GUARDADO
-    # ---------------------------------------------------------
-    df_final = pd.DataFrame()
-    
-    if not df_historico.empty:
-        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
-    else:
-        df_final = df_nuevo
-
-    if not df_final.empty:
-        # Ordenamos por fecha descendente
-        if "Fecha" in df_final.columns:
-            df_final = df_final.sort_values(by="Fecha", ascending=False)
-
-        # Deduplicación Final (Keep First para priorizar la data más reciente cargada)
-        # Usamos un subset de columnas clave para identificar duplicados reales
-        subset_dedupe = ["N° Abonado", "Documento", "Fecha", "Hora", "Tipo Respuesta", "Responsable"]
-        # Aseguramos que las columnas existan antes de deduplicar
-        subset_dedupe = [c for c in subset_dedupe if c in df_final.columns]
+        # F. Selección de Columnas Finales
+        cols_finales = [
+            "Source.Name", "N° Abonado", "Documento", "Cliente", "Estatus", 
+            "Fecha", "Hora", "Tipo Respuesta", "Detalle Respuesta", 
+            "Responsable", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
+            "Ciudad", "Tipo de afluencia"
+        ]
         
-        df_final = df_final.drop_duplicates(subset=subset_dedupe, keep='first')
-        
-        # Limpieza final para Power BI
-        df_final = limpiar_nulos_powerbi(df_final)
+        # Aseguramos que todas existan antes del reindex
+        for c in cols_finales:
+            if c not in df_total.columns:
+                df_total[c] = None
+                
+        df_total = df_total.reindex(columns=cols_finales)
 
-        guardar_parquet(
-            df_final, 
-            NOMBRE_GOLD,
-            filas_iniciales=len(df_nuevo) if not df_nuevo.empty else len(df_final)
-        )
-        console.print(f"[bold green]✅ CBH Gold actualizado. Total filas: {len(df_final):,}[/]")
+    # ---------------------------------------------------------
+    # 5. DEDUPLICACIÓN GLOBAL Y GUARDADO
+    # ---------------------------------------------------------
+    # Ordenamos por fecha descendente
+    df_total = df_total.sort_values(by="Fecha", ascending=False)
+
+    # Deduplicación Final (Keep First sobre orden descendente prioriza la data de la tarde)
+    subset_dedupe = ["N° Abonado", "Documento", "Fecha", "Hora", "Tipo Respuesta", "Responsable"]
+    subset_dedupe = [c for c in subset_dedupe if c in df_total.columns]
+    
+    df_final = df_total.drop_duplicates(subset=subset_dedupe, keep='first')
+    
+    # Estandarización final
+    df_final = limpiar_nulos_powerbi(df_final)
+    df_final = standard_hours(df_final, 'Hora')
+
+    guardar_parquet(
+        df_final, 
+        NOMBRE_GOLD,
+        filas_iniciales=len(df_total),
+        ruta_destino=PATHS.get("gold", "")
+    )
+    console.print(f"[bold green]✅ CBH Gold reconstruido a velocidad luz. Total filas únicas: {len(df_final):,}[/]")
 
 if __name__ == "__main__":
     ejecutar()

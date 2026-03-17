@@ -561,14 +561,18 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
     import glob
     import os
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-    import logging # Por si el logger no está definido globalmente
-    logger = logging.getLogger(__name__)
+    import logging
     
-    # Manejo dinámico del título según si hay fecha o no
+    logger = logging.getLogger(__name__)
+    try:
+        from __main__ import console
+    except ImportError:
+        from rich.console import Console
+        console = Console()
+    
     ref_titulo = columna_fecha if columna_fecha else "Append / Unique"
     console.rule(f"[bold purple]⚡ INGESTA INCREMENTAL POLARS (Ref: {ref_titulo})[/]")
     
-    # 1. Buscar Excels en la carpeta RAW
     archivos_raw = glob.glob(os.path.join(ruta_raw, "*.xlsx"))
     archivos_validos = [f for f in archivos_raw if not os.path.basename(f).startswith("~$")]
     
@@ -576,7 +580,6 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
         console.print("[yellow]⚠️ No hay archivos RAW nuevos para procesar en esta ruta.[/]")
         return False
 
-    # 2. Leer los datos nuevos CON BARRA DE PROGRESO
     dfs_nuevos = []
     
     with Progress(
@@ -596,10 +599,9 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
             progress.update(task, description=f"📄 Leyendo {nombre}")
             
             try:
-                # infer_schema_length=0 para evitar problemas de tipos mixtos
                 df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0)
                 
-                # --- TRACTOR DE FECHAS ROBUSTO (SOLO SI HAY COLUMNA DE FECHA) ---
+                # --- TRACTOR DE FECHAS: Convierte la data nueva a Date nativo ---
                 if columna_fecha and columna_fecha in df.columns:
                     df = df.with_columns(
                         pl.coalesce([
@@ -611,7 +613,6 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
                         ]).alias(columna_fecha)
                     )
                 
-                # Metadata del origen
                 df = df.with_columns(pl.lit(nombre).alias("Source.Name"))
                 dfs_nuevos.append(df)
                 
@@ -624,56 +625,62 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
     if not dfs_nuevos:
         return False
         
-    # Unificamos la data nueva
     df_nuevo_completo = pl.concat(dfs_nuevos, how="diagonal")
     
-    # 3. Extraer fechas únicas (Solo si aplica)
     fechas_nuevas = []
     if columna_fecha and columna_fecha in df_nuevo_completo.columns:
+        # Extraemos las fechas manteniendo su tipo Date nativo
         fechas_nuevas = df_nuevo_completo.drop_nulls(subset=[columna_fecha])[columna_fecha].unique().to_list()
         console.print(f"[green]📅 Fechas detectadas para actualizar: {len(fechas_nuevas)} días únicos.[/]")
     else:
         console.print("[green]🔄 Ingresando datos en modo Unificación / Append.[/]")
 
-    # 4. LÓGICA DROP & REPLACE O APPEND ÚNICO
     if os.path.exists(ruta_bronze_historico):
         console.print(f"[cyan]🔄 Cruzando con histórico: {os.path.basename(ruta_bronze_historico)}...[/]")
         
         try:
-            # 1. Forzamos la lectura SIN mapeo de memoria para que Windows no bloquee el archivo
             with open(ruta_bronze_historico, "rb") as f:
                 df_historico = pl.read_parquet(f, use_pyarrow=False)
             
-            # 2. Lógica de cruce dependiendo si hay fecha o no
             if columna_fecha and fechas_nuevas:
-                # Filtramos lo que vamos a actualizar
+                # =========================================================
+                # NIVELADOR ESTRICTO A FECHA (DATE PUREZA 100%)
+                # =========================================================
+                tipo_columna = df_historico.schema.get(columna_fecha)
+                
+                if tipo_columna in [pl.Utf8, pl.String]:
+                    # Si Pandas lo guardó como texto, cortamos los primeros 10 caracteres (YYYY-MM-DD) y parseamos
+                    df_historico = df_historico.with_columns(
+                        pl.col(columna_fecha).str.slice(0, 10).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias(columna_fecha)
+                    )
+                else:
+                    # Si ya es datetime o numérico, lo casteamos directo
+                    df_historico = df_historico.with_columns(
+                        pl.col(columna_fecha).cast(pl.Date, strict=False).alias(columna_fecha)
+                    )
+                
+                # Ahora sí, el cruce es Date vs Date
                 df_historico_limpio = df_historico.filter(
                     ~pl.col(columna_fecha).is_in(fechas_nuevas)
                 )
-                # Concatenamos
                 df_final = pl.concat([df_historico_limpio, df_nuevo_completo], how="diagonal")
             else:
-                # Si no hay fecha (ej. Horas), simplemente pegamos y quitamos duplicados exactos
                 df_final = pl.concat([df_historico, df_nuevo_completo], how="diagonal").unique()
             
-            # 4. TRUCO DE RENOMBRADO: Para evitar el bloqueo de escritura
-            # Guardamos en un archivo temporal y luego reemplazamos el original
             ruta_temp = ruta_bronze_historico + ".tmp"
             df_final.write_parquet(ruta_temp, compression="snappy")
             
-            # Cerramos cualquier posible rastro y reemplazamos
             if os.path.exists(ruta_bronze_historico):
                 os.remove(ruta_bronze_historico)
             os.rename(ruta_temp, ruta_bronze_historico)
 
         except Exception as e:
             logger.error(f"Error en cruce histórico: {e}")
-            console.print(f"[yellow]⚠️ Reintentando con carga Full por error de acceso...[/]")
+            console.print(f"[yellow]⚠️ Reintentando con carga Full por error de acceso... {e}[/]")
             df_final = df_nuevo_completo
             df_final.write_parquet(ruta_bronze_historico, compression="snappy")
     else:
         df_final = df_nuevo_completo
-        # Creamos el directorio si no existe (movido aquí para evitar errores al crear por primera vez)
         os.makedirs(os.path.dirname(ruta_bronze_historico), exist_ok=True)
         df_final.write_parquet(ruta_bronze_historico, compression="snappy")
         

@@ -14,107 +14,121 @@ from config import (
     SUB_RECLAMOS_APP, 
     SUB_RECLAMOS_BANCO
 )
-from utils import guardar_parquet, console, reportar_tiempo, ingesta_inteligente, archivos_raw
+from utils import guardar_parquet, console, reportar_tiempo, ingesta_incremental_polars 
 
 # -----------------------------------------------------------------------------
 # 1. ETL: RECLAMOS GENERALES (Call Center, OOCC, RRSS)
 # -----------------------------------------------------------------------------
 @reportar_tiempo  
 def procesar_reclamos_general():
-    console.rule("[bold cyan]1. ETL: RECLAMOS GENERALES (INCREMENTAL)[/]")
+    console.rule("[bold cyan]1. ETL: RECLAMOS GENERALES (BRONZE INCREMENTAL / GOLD FULL)[/]")
     
     NOMBRE_GOLD = "Reclamos_General_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
     RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Reclamos_General_Raw_Bronze.parquet")
 
-    try:
-        archivos_raw(PATHS["raw_reclamos"], RUTA_BRONZE)
-    except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
-        
-    dfs_nuevos_acumulados = []
-    
-    # Usamos la lista importada de config
+    # =========================================================
+    # --- PASO 1: ACTUALIZACIÓN INCREMENTAL BRONZE (POLARS) ---
+    # =========================================================
+    # Usamos la lista importada de config para alimentar el mismo Bronze
     for carpeta_nombre in FOLDERS_RECLAMOS_GENERAL:
         ruta_completa = os.path.join(PATHS["raw_reclamos"], carpeta_nombre)
-        
-        df_nuevo_parcial, _ = ingesta_inteligente(
-            ruta_raw=ruta_completa,
-            ruta_gold=RUTA_GOLD_COMPLETA,
-            col_fecha_corte="Fecha Llamada"
-        )
-        
-        if not df_nuevo_parcial.empty:
-            dfs_nuevos_acumulados.append(df_nuevo_parcial)
+        if os.path.exists(ruta_completa):
+            try:
+                ingesta_incremental_polars(
+                    ruta_raw=ruta_completa,
+                    ruta_bronze_historico=RUTA_BRONZE,
+                    columna_fecha="Fecha Llamada"
+                )
+            except Exception as e:
+                console.print(f"[yellow]⚠️ La capa Bronze no se actualizó para {carpeta_nombre}. Error: {e}[/]")
 
-    # Carga Histórico
-    df_historico = pd.DataFrame()
-    if os.path.exists(RUTA_GOLD_COMPLETA):
-        df_historico = pd.read_parquet(RUTA_GOLD_COMPLETA)
+    # =========================================================
+    # --- PASO 2: LECTURA FULL DESDE BRONZE ---
+    # =========================================================
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[bold green]✅ Reclamos Generales: Sistema actualizado (sin datos).[/]")
+        return
+        
+    df_nuevo_total = pd.read_parquet(RUTA_BRONZE)
 
-    # Si no hay nada nuevo
-    if not dfs_nuevos_acumulados:
+    if df_nuevo_total.empty:
         console.print("[bold green]✅ Reclamos Generales: Sistema actualizado.[/]")
-        if df_historico.empty: return
-    else:
-        # Procesar Lote Nuevo
-        df_nuevo_total = pd.concat(dfs_nuevos_acumulados, ignore_index=True)
-        console.print(f"[cyan]🛠️ Transformando {len(df_nuevo_total)} reclamos generales nuevos...[/]")
-        
-        df_nuevo_total = df_nuevo_total.rename(columns={"Tipo Llamada": "Origen"})
-        
-        cols_std = ["N° Abonado", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
-                    "Origen", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
-                    "Suscripción", "Grupo Afinidad", "Franquicia", "Ciudad"]
-        
-        df_nuevo_total = df_nuevo_total.reindex(columns=cols_std)
-        
-        df_nuevo_total["Fecha Llamada"] = pd.to_datetime(df_nuevo_total["Fecha Llamada"], dayfirst=True, errors="coerce")
-        for col in ["N° Abonado", "Responsable", "Detalle Respuesta", "Origen"]:
-            df_nuevo_total[col] = df_nuevo_total[col].fillna("").astype(str)
+        return
 
-        # Unir
-        if not df_historico.empty:
-            df_historico = df_historico.reindex(columns=cols_std)
-            df_final = pd.concat([df_historico, df_nuevo_total], ignore_index=True)
-        else:
-            df_final = df_nuevo_total
-        
-        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Origen"], keep='last')
-        
-        guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final))
+    # =========================================================
+    # --- PASO 3: TRANSFORMACIÓN PANDAS ---
+    # =========================================================
+    console.print(f"[cyan]🛠️ Transformando {len(df_nuevo_total)} reclamos generales totales...[/]")
+    
+    df_nuevo_total = df_nuevo_total.rename(columns={"Tipo Llamada": "Origen"})
+    
+    cols_std = ["N° Abonado", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
+                "Origen", "Tipo Respuesta", "Detalle Respuesta", "Responsable", 
+                "Suscripción", "Grupo Afinidad", "Franquicia", "Ciudad"]
+    
+    df_nuevo_total = df_nuevo_total.reindex(columns=cols_std)
+    
+    df_nuevo_total["Fecha Llamada"] = pd.to_datetime(df_nuevo_total["Fecha Llamada"], dayfirst=True, errors="coerce")
+    for col in ["N° Abonado", "Responsable", "Detalle Respuesta", "Origen"]:
+        df_nuevo_total[col] = df_nuevo_total[col].fillna("").astype(str)
 
+    # =========================================================
+    # --- PASO 4: ESCRITURA FULL EN CAPA GOLD ---
+    # =========================================================
+    df_final = df_nuevo_total.copy()
+    df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Origen"], keep='last')
+    
+    guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final))
 
 # -----------------------------------------------------------------------------
 # 2. ETL: FALLAS APP (USANDO CONFIG)
 # -----------------------------------------------------------------------------
 @reportar_tiempo  
 def procesar_fallas_app():
-    console.rule("[bold cyan]2. ETL: FALLAS APP (INCREMENTAL)[/]")
+    console.rule("[bold cyan]2. ETL: FALLAS APP (BRONZE INCREMENTAL / GOLD FULL)[/]")
     
     # USO DIRECTO DE LA VARIABLE DE CONFIG
     RUTA_APP = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_APP)
     
     NOMBRE_GOLD = "Reclamos_App_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
+    # NUEVA RUTA BRONZE
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Reclamos_App_Raw_Bronze.parquet")
 
     if not os.path.exists(RUTA_APP):
         console.print(f"[bold red]❌ Error: No existe la ruta configurada: {RUTA_APP}[/]")
         return
 
-    # Ingesta
-    df_nuevo, df_historico = ingesta_inteligente(
-        ruta_raw=RUTA_APP,
-        ruta_gold=RUTA_GOLD_COMPLETA,
-        col_fecha_corte="Fecha Llamada"
-    )
-    
+    # =========================================================
+    # --- PASO 1: ACTUALIZACIÓN INCREMENTAL BRONZE (POLARS) ---
+    # =========================================================
+    try:
+        ingesta_incremental_polars(
+            ruta_raw=RUTA_APP,
+            ruta_bronze_historico=RUTA_BRONZE,
+            columna_fecha="Fecha Llamada"
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó. Error: {e}[/]")
+
+    # =========================================================
+    # --- PASO 2: LECTURA FULL DESDE BRONZE ---
+    # =========================================================
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[bold green]✅ Fallas App: Sistema actualizado (sin datos).[/]")
+        return
+        
+    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+
     if df_nuevo.empty:
         console.print("[bold green]✅ Fallas App: Sistema actualizado.[/]")
         return
 
-    # Transformación
-    console.print(f"[cyan]📱 Procesando {len(df_nuevo)} registros de APP...[/]")
+    # =========================================================
+    # --- PASO 3: TRANSFORMACIÓN PANDAS ---
+    # =========================================================
+    console.print(f"[cyan]📱 Procesando {len(df_nuevo)} registros totales de APP...[/]")
     
     df_nuevo["Detalle Respuesta"] = df_nuevo["Detalle Respuesta"].astype(str).str.upper()
     df_nuevo["OrdenCategoria"] = df_nuevo.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
@@ -126,47 +140,63 @@ def procesar_fallas_app():
     
     df_nuevo = df_nuevo.reindex(columns=cols)
     
-    # Unión
-    if not df_historico.empty:
-        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
-    else:
-        df_final = df_nuevo
+    # =========================================================
+    # --- PASO 4: ESCRITURA FULL EN CAPA GOLD ---
+    # =========================================================
+    df_final = df_nuevo.copy()
     
     if not df_final.empty:
         df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada"], keep='last')
         guardar_parquet(df_final, NOMBRE_GOLD)
-
 
 # -----------------------------------------------------------------------------
 # 3. ETL: FALLAS BANCOS (USANDO CONFIG)
 # -----------------------------------------------------------------------------
 @reportar_tiempo 
 def procesar_fallas_banco():
-    console.rule("[bold cyan]3. ETL: FALLAS BANCOS (INCREMENTAL)[/]")
+    console.rule("[bold cyan]3. ETL: FALLAS BANCOS (BRONZE INCREMENTAL / GOLD FULL)[/]")
     
     # USO DIRECTO DE LA VARIABLE DE CONFIG
     RUTA_BANCO = os.path.join(PATHS["raw_reclamos"], SUB_RECLAMOS_BANCO)
     
     NOMBRE_GOLD = "Reclamos_Banco_Gold.parquet"
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
+    # NUEVA RUTA BRONZE
+    RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Reclamos_Banco_Raw_Bronze.parquet")
 
     if not os.path.exists(RUTA_BANCO):
         console.print(f"[bold red]❌ Error: No existe la ruta configurada: {RUTA_BANCO}[/]")
         return
 
-    # Ingesta
-    df_nuevo, df_historico = ingesta_inteligente(
-        ruta_raw=RUTA_BANCO,
-        ruta_gold=RUTA_GOLD_COMPLETA,
-        col_fecha_corte="Fecha Llamada"
-    )
+    # =========================================================
+    # --- PASO 1: ACTUALIZACIÓN INCREMENTAL BRONZE (POLARS) ---
+    # =========================================================
+    try:
+        ingesta_incremental_polars(
+            ruta_raw=RUTA_BANCO,
+            ruta_bronze_historico=RUTA_BRONZE,
+            columna_fecha="Fecha Llamada"
+        )
+    except Exception as e:
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó. Error: {e}[/]")
+
+    # =========================================================
+    # --- PASO 2: LECTURA FULL DESDE BRONZE ---
+    # =========================================================
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[bold green]✅ Fallas Banco: Sistema actualizado (sin datos).[/]")
+        return
+        
+    df_nuevo = pd.read_parquet(RUTA_BRONZE)
 
     if df_nuevo.empty:
         console.print("[bold green]✅ Fallas Banco: Sistema actualizado.[/]")
         return
 
-    # Transformación
-    console.print(f"[cyan]🏦 Procesando {len(df_nuevo)} registros de BANCOS...[/]")
+    # =========================================================
+    # --- PASO 3: TRANSFORMACIÓN PANDAS ---
+    # =========================================================
+    console.print(f"[cyan]🏦 Procesando {len(df_nuevo)} registros totales de BANCOS...[/]")
     
     target = ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"]
     df_nuevo["Detalle Respuesta"] = df_nuevo["Detalle Respuesta"].astype(str).str.upper().str.strip()
@@ -189,12 +219,10 @@ def procesar_fallas_banco():
 
         df_nuevo = df_nuevo.reindex(columns=cols)
 
-        # Unión
-        if not df_historico.empty:
-            df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
-        else:
-            df_final = df_nuevo
-        
+        # =========================================================
+        # --- PASO 4: ESCRITURA FULL EN CAPA GOLD ---
+        # =========================================================
+        df_final = df_nuevo.copy()
         df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Detalle Respuesta"], keep='last')
         guardar_parquet(df_final, NOMBRE_GOLD)
     else:

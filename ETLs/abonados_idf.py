@@ -7,7 +7,7 @@ import re
 import datetime
 import calendar
 import gc
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 # --- CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,8 +19,7 @@ from utils import (
     guardar_parquet, 
     reportar_tiempo, 
     console, 
-    limpiar_nulos_powerbi,
-    archivos_raw # <-- Importación confirmada
+    limpiar_nulos_powerbi
 )
 
 # --- CONFIGURACIÓN GLOBAL ---
@@ -55,8 +54,11 @@ def obtener_fecha_corte_snapshot(nombre_archivo):
             return None, None, None
         
         fecha_str = re.sub(r"\W", "-", match.group(1))
-        fecha_archivo = pd.to_datetime(fecha_str, format="%d-%m-%Y")
+        fecha_archivo = pd.to_datetime(fecha_str, format="%d-%m-%Y", errors='coerce')
         
+        if pd.isnull(fecha_archivo):
+            return None, None, None
+            
         dia, mes, anio = fecha_archivo.day, fecha_archivo.month, fecha_archivo.year
         
         if dia <= 5:
@@ -78,124 +80,154 @@ def obtener_fecha_corte_snapshot(nombre_archivo):
         return fecha_target, fecha_target, nombre_etiqueta
 
     except Exception as e:
-        console.print(f"[red]Error calc fecha: {e}[/]")
         return None, None, None
 
 # ==========================================
-# WORKER: PROCESAR UN SOLO ARCHIVO
-# ==========================================
-def procesar_archivo_worker(ruta_completa):
-    nombre_archivo = os.path.basename(ruta_completa)
-    fecha_inicio, fecha_fin, quincena_nombre = obtener_fecha_corte_snapshot(nombre_archivo)
-    
-    if not fecha_inicio:
-        return False, f"[yellow]⚠️ Sin fecha válida (Regex): {nombre_archivo}[/]", None
-
-    try:
-        df = pd.read_excel(ruta_completa, engine="calamine")
-        if df.empty: 
-            return False, f"[dim]⚠️ Archivo vacío: {nombre_archivo}[/]", None
-
-        df.columns = df.columns.astype(str).str.strip()
-        df = df.rename(columns=MAPEO_COLUMNAS)
-
-        if "Franquicia" not in df.columns:
-            return False, f"[red]❌ Falta columna Franquicia: {nombre_archivo}[/]", None
-
-        df_small = pd.DataFrame()
-        df_small["ID"] = df["ID"] if "ID" in df.columns else None
-        df_small["Estatus contrato"] = df["Estatus contrato"] if "Estatus contrato" in df.columns else None
-        df_small["Franquicia"] = df["Franquicia"].fillna("NO DEFINIDA").astype(str).str.strip().str.upper()
-        
-        df_small["Quincena Evaluada"] = quincena_nombre
-        df_small["FechaInicio"] = fecha_inicio
-        df_small["FechaFin"] = fecha_fin
-
-        col_detalle = next((c for c in ["Detalle Orden", "Detalle"] if c in df.columns), None)
-        if col_detalle:
-            mask_pruebas = df[col_detalle] == "PRUEBA DE INTERNET"
-            df_small = df_small[~mask_pruebas]
-
-        del df
-        gc.collect()
-
-        cols_finales = [c for c in COLS_ABONADOS_SILVER if c in df_small.columns]
-        return True, f"   ✅ {nombre_archivo} -> {quincena_nombre}", df_small[cols_finales].copy()
-
-    except Exception as e:
-        return False, f"[red]❌ Error crítico en {nombre_archivo}: {e}[/]", None
-
-# ==========================================
-# ORQUESTADOR PARALELO
+# ORQUESTADOR (INCREMENTAL CRONOLÓGICO)
 # ==========================================
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold cyan]PIPELINE: ABONADOS (SNAPSHOTS)[/]")
+    console.rule("[bold cyan]📊 PIPELINE: ABONADOS (INCREMENTAL CRONOLÓGICO ULTRA-RÁPIDO)[/]")
 
-    # 1. Resolución de Rutas
     ruta_origen = PATHS.get("raw_abonados_idf")
     if not ruta_origen or not os.path.exists(ruta_origen):
-        # Fallback hardcodeado que tienes en tu script
         ruta_origen = r"C:\Users\josperez\Documents\A-DataStack\01-Proyectos\01-Data_PipelinesFibex\02_Data_Lake\raw_data\5-Indice de falla\2-Abonados"
     
     if not os.path.exists(ruta_origen):
         console.print(f"[red]❌ Error: No se encuentra la ruta: {ruta_origen}[/]")
         return
 
-    # -------------------------------------------------------------------------
-    # PASO NUEVO: GENERAR CAPA BRONZE (Respaldo Crudo Consolidado)
-    # -------------------------------------------------------------------------
-    ruta_bronze_salida = os.path.join(PATHS.get("bronze", "data/bronze"), "Stock_Abonados_Raw_Bronze.parquet")
-    try:
-        # Polars consolidará todos los snapshots en un solo Parquet en segundos
-        archivos_raw(ruta_origen, ruta_bronze_salida)
-    except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se pudo generar: {e}[/]")
-    # -------------------------------------------------------------------------
-
-    ruta_silver = PATHS.get("silver")
-    ruta_gold   = PATHS.get("gold")
-
-    archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
-    archivos = [f for f in archivos if not os.path.basename(f).startswith("~$")]
+    # --- FIX CRONOLÓGICO: Ordenamos por la FECHA REAL del archivo, no por el nombre ---
+    archivos_raw = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
+    archivos = sorted(
+        [f for f in archivos_raw if not os.path.basename(f).startswith("~$")],
+        key=lambda x: obtener_fecha_corte_snapshot(x)[0] if obtener_fecha_corte_snapshot(x)[0] else pd.Timestamp('1900-01-01')
+    )
     
-    console.print(f"📂 Ruta: {ruta_origen}")
-    console.print(f"🚀 Iniciando procesamiento paralelo de {len(archivos)} archivos...")
-
-    dataframes_list = []
-    
-    with ProcessPoolExecutor(max_workers=4) as executor:
-        futures = {executor.submit(procesar_archivo_worker, archivo): archivo for archivo in archivos}
-        
-        for future in as_completed(futures):
-            exito, mensaje, df_result = future.result()
-            console.print(mensaje)
-            
-            if exito and df_result is not None:
-                dataframes_list.append(df_result)
-                gc.collect()
-
-    if not dataframes_list:
-        console.print("[bold red]⛔ No se generaron datos.[/]")
+    if not archivos:
+        console.print("[bold red]⛔ No se encontraron archivos RAW para procesar.[/]")
         return
 
-    # --- CONSOLIDACIÓN SILVER/GOLD ---
-    console.print(f"\n🔄 Consolidando {len(dataframes_list)} DataFrames...")
+    # 1. LEER MEMORIA HISTÓRICA
+    ruta_silver = PATHS.get("silver", "data/silver")
+    ruta_silver_completa = os.path.join(ruta_silver, "Stock_Abonados_Silver_Detalle.parquet")
     
-    df_silver = pd.concat(dataframes_list, ignore_index=True)
-    df_silver = df_silver.drop_duplicates()
-    df_silver = limpiar_nulos_powerbi(df_silver)
+    quincenas_existentes = set()
+    if os.path.exists(ruta_silver_completa):
+        try:
+            df_hist_meta = pd.read_parquet(ruta_silver_completa, columns=["Quincena Evaluada"])
+            quincenas_existentes = set(df_hist_meta["Quincena Evaluada"].unique())
+            del df_hist_meta
+            gc.collect()
+            console.print(f"[green]✅ Memoria Silver cargada. {len(quincenas_existentes)} quincenas registradas.[/]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Error leyendo memoria: {e}. Se hará lectura completa.[/]")
 
-    guardar_parquet(df_silver, "Stock_Abonados_Silver_Detalle.parquet", filas_iniciales=len(df_silver), ruta_destino=ruta_silver)
+    # 2. PROCESAMIENTO INTELIGENTE
+    console.print(f"\n[cyan]🚀 Fase 1: Escaneando {len(archivos)} Snapshots en orden cronológico...[/]")
+    dataframes_list = []
+    quincenas_procesadas_hoy = []
+    
+    # El último de la lista ordenada cronológicamente es el mes más reciente
+    ultimo_archivo_path = archivos[-1] 
 
-    df_gold = df_silver.groupby(["Quincena Evaluada", "Franquicia"], as_index=False).agg(
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]({task.completed}/{task.total})[/]"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        TextColumn("[dim]{task.description}"),
+        console=console
+    ) as progress:
+        
+        task = progress.add_task("Procesando...", total=len(archivos))
+        
+        for archivo in archivos:
+            nombre_archivo = os.path.basename(archivo)
+            es_ultimo_archivo = (archivo == ultimo_archivo_path)
+            
+            fecha_inicio, fecha_fin, quincena_nombre = obtener_fecha_corte_snapshot(archivo)
+            
+            if not fecha_inicio:
+                progress.advance(task)
+                continue
+
+            # OMISIÓN INTELIGENTE
+            if quincena_nombre in quincenas_existentes and not es_ultimo_archivo:
+                progress.console.print(f"[dim]  ⏭️ Saltando -> {quincena_nombre} (Ya en Silver)[/]")
+                progress.advance(task)
+                continue
+
+            # LECTURA
+            try:
+                if es_ultimo_archivo:
+                    progress.console.print(f"[magenta]  🔄 Refrescando quincena actual -> {quincena_nombre}[/]")
+                
+                df = pd.read_excel(archivo, engine="calamine")
+                if df.empty: 
+                    progress.advance(task)
+                    continue
+
+                df.columns = df.columns.astype(str).str.strip()
+                df = df.rename(columns=MAPEO_COLUMNAS)
+
+                # Construcción del DataFrame pequeño
+                df_small = pd.DataFrame()
+                df_small["ID"] = df["ID"] if "ID" in df.columns else None
+                df_small["Estatus contrato"] = df["Estatus contrato"] if "Estatus contrato" in df.columns else None
+                df_small["Franquicia"] = df["Franquicia"].fillna("NO DEFINIDA").astype(str).str.strip().str.upper()
+                df_small["Quincena Evaluada"] = quincena_nombre
+                df_small["FechaInicio"] = fecha_inicio
+                df_small["FechaFin"] = fecha_fin
+
+                # Filtro Pruebas
+                col_det = next((c for c in ["Detalle Orden", "Detalle"] if c in df.columns), None)
+                if col_det:
+                    df_small = df_small[df[col_det] != "PRUEBA DE INTERNET"]
+
+                dataframes_list.append(df_small[COLS_ABONADOS_SILVER].copy())
+                quincenas_procesadas_hoy.append(quincena_nombre)
+
+                progress.console.print(f"[green]  ✅ Procesado -> {quincena_nombre} ({len(df_small):,} abonados)[/]")
+
+            except Exception as e:
+                progress.console.print(f"[red]❌ Error en {nombre_archivo}: {e}[/]")
+            finally:
+                if 'df' in locals(): del df
+                gc.collect()
+            
+            progress.advance(task)
+
+    # 3. UPSERT EN SILVER
+    if not dataframes_list:
+        console.print("[bold green]✅ El sistema ya está al día.[/]")
+        return
+
+    console.print(f"\n[cyan]🔄 Fase 2: Uniendo con historial Silver (Upsert)...[/]")
+    df_nuevo_lote = pd.concat(dataframes_list, ignore_index=True).drop_duplicates()
+    
+    if os.path.exists(ruta_silver_completa):
+        df_hist_full = pd.read_parquet(ruta_silver_completa)
+        # Borramos lo que acabamos de refrescar
+        df_hist_limpio = df_hist_full[~df_hist_full["Quincena Evaluada"].isin(quincenas_procesadas_hoy)]
+        df_silver_final = pd.concat([df_hist_limpio, df_nuevo_lote], ignore_index=True)
+    else:
+        df_silver_final = df_nuevo_lote
+
+    df_silver_final = limpiar_nulos_powerbi(df_silver_final)
+    
+    # 4. GUARDADO
+    ruta_gold = PATHS.get("gold", "data/gold")
+    guardar_parquet(df_silver_final, "Stock_Abonados_Silver_Detalle.parquet", filas_iniciales=len(df_silver_final), ruta_destino=ruta_silver)
+
+    df_gold = df_silver_final.groupby(["Quincena Evaluada", "Franquicia"], as_index=False).agg(
         Total_Abonados=("ID", "nunique"),
         Fecha_Corte=("FechaFin", "max")
     )
-    
     guardar_parquet(df_gold, "Stock_Abonados_Gold_Resumen.parquet", filas_iniciales=len(df_gold), ruta_destino=ruta_gold)
     
-    console.print(f"[bold green]✨ Proceso Finalizado. (Bronze, Silver y Gold generados)[/]")
+    console.print(f"[bold green]✨ Proceso Finalizado. (Sincronizado Cronológicamente)[/]")
 
 if __name__ == "__main__":
     ejecutar()
