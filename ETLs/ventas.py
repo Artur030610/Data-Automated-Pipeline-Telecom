@@ -2,23 +2,20 @@ import pandas as pd
 import numpy as np
 import os
 from config import PATHS, LISTA_VENDEDORES_OFICINA, LISTA_VENDEDORES_PROPIOS, MAPA_MESES
-# Agregamos la nueva función maestra a los imports
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, archivos_raw
+from utils import (
+    leer_carpeta, guardar_parquet, reportar_tiempo, console, 
+    ingesta_inteligente, ingesta_incremental_polars 
+)
 
-# --- LÓGICA DE CLASIFICACIÓN (Intacta) ---
+# --- LÓGICA DE CLASIFICACIÓN (Mantenida 100% igual) ---
 def clasificar_canal(row):
-    """
-    Determina el canal de venta basado en prioridades y listas blancas.
-    """
     vendedor = str(row.get("Vendedor", "")).lower()
     nombre_detectado = str(row.get("nombre_detectado", ""))
     tipo_coincidencia = str(row.get("tipo_coincidencia", ""))
     
-    # PRIORIDAD 1: CALL CENTER
     if "televentas" in vendedor or "call center" in vendedor:
         return "CALL CENTER"
     
-    # PRIORIDAD 2: OFICINA COMERCIAL
     condicion_oficina_detectada = (
         nombre_detectado != "nan" and 
         nombre_detectado != "" and 
@@ -30,26 +27,23 @@ def clasificar_canal(row):
     if condicion_oficina_detectada or (vendedor in LISTA_VENDEDORES_OFICINA):
         return "OFICINA COMERCIAL"
     
-    # PRIORIDAD 3: VENDEDORES PROPIOS
     condicion_calle = ("ventas" in vendedor and "televentas" not in vendedor)
     
     if condicion_calle or (vendedor in LISTA_VENDEDORES_PROPIOS):
         return "VENDEDORES PROPIOS"
     
-    # RESTO
     return "ALIADOS"
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]9. ETL: VENTAS (INCREMENTAL INTELIGENTE)[/]")
+    console.rule("[bold magenta]9. ETL: VENTAS (BRONZE INCREMENTAL / GOLD FULL)[/]")
     
     # 1. Configuración de Rutas
     RUTA_RAW = PATHS["ventas_abonados"]
     NOMBRE_GOLD = "Ventas_Listado_Gold.parquet"
-    # Construimos la ruta completa al Parquet para que la función la encuentre
     RUTA_GOLD_COMPLETA = os.path.join(PATHS.get("gold", "data/gold"), NOMBRE_GOLD)
     RUTA_BRONZE = os.path.join(PATHS.get("bronze", "data/bronze"), "Ventas_Listado_Bronze.parquet")
-    # Columnas que esperamos del Raw
+    
     cols_esperadas = [
         "ID", "N° Abonado", "Fecha Contrato", "Estatus", "Suscripción", 
         "Grupo Afinidad", "Nombre Franquicia", "Ciudad", "Vendedor", 
@@ -57,124 +51,89 @@ def ejecutar():
         "tipo_coincidencia", "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"
     ]
 
+    # =========================================================
+    # --- PASO 1: ACTUALIZACIÓN INCREMENTAL BRONZE (POLARS) ---
+    # =========================================================
     try:
-        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+        # Usamos Polars para unificar los Raw nuevos en el Bronze histórico
+        ingesta_incremental_polars(
+            ruta_raw=RUTA_RAW,
+            ruta_bronze_historico=RUTA_BRONZE,
+            columna_fecha="Fecha Contrato"
+        )
     except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
-    # -------------------------------------------------------------------------
-    # 2. INGESTA INTELIGENTE
-    # -------------------------------------------------------------------------
-    # Aquí le decimos: "Usa 'Fecha Contrato' para saber qué es nuevo"
-    df_nuevo, df_historico = ingesta_inteligente(
-        ruta_raw=RUTA_RAW, 
-        ruta_gold=RUTA_GOLD_COMPLETA, 
-        col_fecha_corte="Fecha Contrato"
-    )
-    
-    # Si no hay nada nuevo y ya tenemos historia, terminamos aquí.
-    if df_nuevo.empty and not df_historico.empty:
-        console.print("[bold green]✅ No hay ventas nuevas. El proceso terminó temprano.[/]")
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó por error de acceso. Error: {e}[/]")
+
+    # =========================================================
+    # --- PASO 2: LECTURA FULL DESDE BRONZE (Fuente de Verdad) ---
+    # =========================================================
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[red]❌ No se encontró la capa Bronze. Ejecución abortada.[/]")
+        return
+        
+    console.print("[cyan]📥 Leyendo histórico completo desde capa Bronze...[/]")
+    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+
+    if df_nuevo.empty:
+        console.print("[bold green]✅ No hay datos en Bronze para procesar.[/]")
         return
 
-    # -------------------------------------------------------------------------
-    # 3. TRANSFORMACIÓN (SOLO A LO NUEVO)
-    # -------------------------------------------------------------------------
-    if not df_nuevo.empty:
-        console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} registros nuevos...[/]")
-        
-        # 1. Asegurar columnas base
-        df_nuevo = df_nuevo.reindex(columns=cols_esperadas)
-        
-        # 2. Renombres
-        df_nuevo = df_nuevo.rename(columns={"oficina_comercial": "Oficina"})
-        df_nuevo["Tipo de afluencia"] = "VENTAS"
-        
-        # 3. CORRECCIÓN DE FECHAS (Híbrida)
-        # Convertimos 'Fecha Contrato' usando lógica Excel serial + Texto
-        ser_numerica = pd.to_numeric(df_nuevo["Fecha Contrato"], errors='coerce')
-        mask_es_serial = ser_numerica.notna() & (ser_numerica > 35000)
-        
-        fechas_finales = pd.Series(pd.NaT, index=df_nuevo.index)
-        
-        # A) Seriales numéricos
-        if mask_es_serial.any():
-            fechas_finales[mask_es_serial] = pd.to_datetime(ser_numerica[mask_es_serial], unit='D', origin='1899-12-30')
-        
-        # B) Texto normal
-        if (~mask_es_serial).any():
-            fechas_finales[~mask_es_serial] = pd.to_datetime(df_nuevo.loc[~mask_es_serial, "Fecha Contrato"], dayfirst=True, errors='coerce')
-            
-        df_nuevo["Fecha Contrato"] = fechas_finales
-        df_nuevo["Mes"] = df_nuevo["Fecha Contrato"].dt.month.map(MAPA_MESES).str.capitalize()
+    # =========================================================
+    # --- PASO 3: TRANSFORMACIÓN PANDAS (Lógica de Negocio) ---
+    # =========================================================
+    console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} registros totales...[/]")
+    
+    df_nuevo = df_nuevo.reindex(columns=cols_esperadas)
+    df_nuevo = df_nuevo.rename(columns={"oficina_comercial": "Oficina"})
+    df_nuevo["Tipo de afluencia"] = "VENTAS"
+    
+    # --- CORRECCIÓN DE FECHAS (Simplificada) ---
+    df_nuevo["Fecha Contrato"] = pd.to_datetime(df_nuevo["Fecha Contrato"], errors='coerce')
+    df_nuevo["Mes"] = df_nuevo["Fecha Contrato"].dt.month.map(MAPA_MESES).str.capitalize()
 
-        # 4. LIMPIEZA DE TEXTO
-        # Convertimos todo a string limpio
-        columnas_texto = ["Vendedor", "Ciudad", "nombre_detectado", "Oficina", "N° Abonado"]
-        
-        # 1. Definimos qué columnas van a qué transformación
-        cols_to_fix = [c for c in columnas_texto if c in df_nuevo.columns]
-        cols_upper = [c for c in cols_to_fix if c != "Vendedor"]
-        cols_lower = ["Vendedor"] if "Vendedor" in cols_to_fix else []
+    # --- LIMPIEZA DE TEXTO ---
+    columnas_texto = ["Vendedor", "Ciudad", "nombre_detectado", "Oficina", "N° Abonado"]
+    cols_to_fix = [c for c in columnas_texto if c in df_nuevo.columns]
+    
+    df_nuevo[cols_to_fix] = df_nuevo[cols_to_fix].fillna("").astype(str).apply(lambda x: x.str.strip())
+    
+    # Upper/Lower
+    cols_upper = [c for c in cols_to_fix if c != "Vendedor"]
+    if cols_upper: df_nuevo[cols_upper] = df_nuevo[cols_upper].apply(lambda x: x.str.upper())
+    if "Vendedor" in cols_to_fix: df_nuevo["Vendedor"] = df_nuevo["Vendedor"].str.lower()
 
-        # 2. Limpieza general (fillna + strip) usando applymap o apply
-        # Esto limpia todas de un solo golpe
-        df_nuevo[cols_to_fix] = df_nuevo[cols_to_fix].fillna("").astype(str).apply(lambda x: x.str.strip())
+    # --- REGLAS BEJUMA ---
+    mask_bejuma = df_nuevo["Vendedor"].str.contains("bejuma", case=False, na=False) & \
+                  df_nuevo["Vendedor"].str.contains("ofic", case=False, na=False)
+    
+    if mask_bejuma.any():
+        df_nuevo.loc[mask_bejuma, "Oficina"] = "BEJUMA"
+        df_nuevo.loc[mask_bejuma, "tipo_coincidencia"] = "Oficina Detectada"
+        df_nuevo.loc[mask_bejuma, "nombre_detectado"] = "OFICINA BEJUMA"
 
-        # 3. Transformación de caja (Upper/Lower) por bloques
-        if cols_upper:
-            df_nuevo[cols_upper] = df_nuevo[cols_upper].apply(lambda x: x.str.upper())
-        if cols_lower:
-            df_nuevo[cols_lower] = df_nuevo[cols_lower].apply(lambda x: x.str.lower())
+    # --- CLASIFICACIÓN Y LIMPIEZA FINAL ---
+    df_nuevo["Canal"] = df_nuevo.apply(clasificar_canal, axis=1)
+    
+    cols_a_borrar = ["Estado", "Cliente", "ID", "Serv/Paquete", 
+                     "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"]
+    df_nuevo = df_nuevo.drop(columns=cols_a_borrar, errors="ignore")
+    df_nuevo = df_nuevo[df_nuevo['tipo_coincidencia'] != 'Pendiente de Revisión']
 
-        # 5. REGLAS BEJUMA (Forzado)
-        tiene_bejuma = df_nuevo["Vendedor"].str.contains("bejuma", case=False, na=False)
-        tiene_oficina = df_nuevo["Vendedor"].str.contains("ofic", case=False, na=False)
-        mask_bejuma = tiene_bejuma & tiene_oficina
-        
-        if mask_bejuma.any():
-            df_nuevo.loc[mask_bejuma, "Oficina"] = "BEJUMA"
-            df_nuevo.loc[mask_bejuma, "tipo_coincidencia"] = "Oficina Detectada"
-            df_nuevo.loc[mask_bejuma, "nombre_detectado"] = "OFICINA BEJUMA"
-
-        # 6. CLASIFICACIÓN DE CANAL
-        df_nuevo["Canal"] = df_nuevo.apply(clasificar_canal, axis=1)
-
-        # 7. LIMPIEZA FINAL
-        cols_a_borrar = ["Estado", "Cliente", "ID", "Serv/Paquete", 
-                         "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"]
-        df_nuevo = df_nuevo.drop(columns=cols_a_borrar, errors="ignore")
-        
-        # Filtro de calidad
-        df_nuevo = df_nuevo[df_nuevo['tipo_coincidencia'] != 'Pendiente de Revisión']
-
-    # -------------------------------------------------------------------------
-    # 4. UNIFICACIÓN Y GUARDADO
-    # -------------------------------------------------------------------------
-    df_final = pd.DataFrame()
-
-    # Unimos Histórico + Nuevo
-    if not df_historico.empty and not df_nuevo.empty:
-        df_final = pd.concat([df_historico, df_nuevo], ignore_index=True)
-    elif not df_nuevo.empty:
-        df_final = df_nuevo
-    else:
-        df_final = df_historico
+    # =========================================================
+    # --- PASO 4: ESCRITURA FULL EN CAPA GOLD ---
+    # =========================================================
+    # Mantenemos el nombre de la variable df_final para la escritura
+    df_final = df_nuevo.copy()
 
     if not df_final.empty:
         filas_antes = len(df_final)
-        
-        # Deduplicación: Usamos 'keep=last' para que la versión nueva prevalezca
+        # Último seguro contra duplicados por clave de negocio
         df_final = df_final.drop_duplicates(
             subset=["N° Abonado", "Fecha Contrato", "Vendedor", "Ciudad"], 
             keep='last'
         )
         
-        # Guardamos usando tu función de utils que maneja bloqueos de archivo
-        guardar_parquet(
-            df_final, 
-            NOMBRE_GOLD,
-            filas_iniciales=filas_antes
-        )
+        guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
 
 if __name__ == "__main__":
     ejecutar()
