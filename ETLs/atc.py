@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 import sys
 
@@ -12,7 +13,7 @@ from utils import guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, conso
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]🎧 ETL: ATENCIÓN AL CLIENTE (POLARS BRONZE + PANDAS GOLD)[/]")
+    console.rule("[bold magenta]🎧 ETL: ATENCIÓN AL CLIENTE (POLARS + PANDAS + PARETO)[/]")
     
     # 1. DEFINICIÓN DE RUTAS
     RUTA_RAW = PATHS["raw_atencion"]
@@ -24,7 +25,6 @@ def ejecutar():
     # 2. INGESTA BRONZE (POLARS - UPSERT POR FECHA)
     # ---------------------------------------------------------
     console.print("[cyan]🚀 Fase 1: Actualizando capa Bronze con Polars...[/]")
-    # Usamos tu función élite. La columna de fecha en los raw de ATC es "Fecha Llamada"
     ingesta_exitosa = ingesta_incremental_polars(
         ruta_raw=RUTA_RAW, 
         ruta_bronze_historico=RUTA_BRONZE, 
@@ -66,10 +66,11 @@ def ejecutar():
         df_total[col] = df_total[col].astype(str).str.strip()
         df_total[col] = df_total[col].str.replace(r'\.0$', '', regex=True)
         df_total[col] = df_total[col].str.replace('.', '', regex=False)
-        df_total[col] = df_total[col].replace({'nan': None, 'None': None, '': None})
+        # ⚠️ Eliminado el reemplazo por 'None' para evitar romper Power BI
 
     # C. FECHAS Y TEXTOS
-    df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce")
+    # ⚠️ Forzamos a que no haya nanosegundos extraños
+    df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce").dt.normalize()
     df_total['Vendedor'] = df_total['Vendedor'].fillna('').astype(str).str.upper()
 
     # D. FILTROS DE NEGOCIO (Exclusiones)
@@ -89,25 +90,46 @@ def ejecutar():
         "Ciudad", "Tipo de afluencia","Observación"
     ]
     
-    # Aseguramos que todas existan antes del reindex
+    # ⚠️ Aseguramos que todas existan. Usamos np.nan temporalmente, luego blindamos
     for c in cols_output:
         if c not in df_total.columns:
-            df_total[c] = None
+            df_total[c] = np.nan
             
     df_total = df_total.reindex(columns=cols_output)
 
     # ---------------------------------------------------------
-    # 5. DEDUPLICACIÓN GLOBAL Y GUARDADO
+    # 5. DEDUPLICACIÓN GLOBAL
     # ---------------------------------------------------------
     subset_final = [
         "N° Abonado", "Documento", "Fecha", "Hora", 
         "Tipo Respuesta", "Detalle Respuesta", "Vendedor"
     ]
-    # Keep last como última red de seguridad
-    df_final = df_total.drop_duplicates(subset=subset_final, keep='last')
+    df_final = df_total.drop_duplicates(subset=subset_final, keep='last').copy()
     
+    # ---------------------------------------------------------
+    # 6. CÁLCULO DE RANKING PARA PARETO (RankingMotivo)
+    # ---------------------------------------------------------
+    console.print("[cyan]📊 Generando Ranking de Motivos para el Pareto...[/]")
+    if 'Tipo Respuesta' in df_final.columns:
+        # Excluimos strings vacíos o nulos para el conteo
+        conteos = df_final['Tipo Respuesta'].replace('', np.nan).dropna().value_counts()
+        
+        # Generamos el rank denso (1, 2, 3...)
+        ranking_map = conteos.rank(method='dense', ascending=False).astype(int)
+        
+        # Mapeamos y llenamos los nulos con 0 para mantener consistencia numérica
+        df_final['RankingMotivo'] = df_final['Tipo Respuesta'].map(ranking_map).fillna(0).astype(int)
+
+    # ---------------------------------------------------------
+    # 7. BLINDAJE FINAL DE TIPOS Y GUARDADO
+    # ---------------------------------------------------------
     df_final = limpiar_nulos_powerbi(df_final)
     df_final = standard_hours(df_final, 'Hora')
+    
+    # ⚠️ EL BLINDAJE: Garantizamos que Power BI no explote por los nulos
+    cols_texto = df_final.select_dtypes(include=['object']).columns
+    for col in cols_texto:
+        df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
     
     guardar_parquet(
         df_final, 
