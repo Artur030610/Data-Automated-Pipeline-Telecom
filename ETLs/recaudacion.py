@@ -5,7 +5,7 @@ import sys
 import glob 
 
 # --- CAMBIO 1: IMPORTAMOS LA NUEVA FUNCIÓN DE POLARS ---
-from utils import standard_hours, leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas
+from utils import standard_hours, leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas, limpiar_nulos_powerbi
 from utils import ingesta_incremental_polars  # <--- NUEVO
 
 # --- EL TRUCO DEL ASCENSOR ---
@@ -164,6 +164,7 @@ def ejecutar():
         filas_antes = len(df_final)
         df_final = df_final.drop_duplicates(subset=["ID Pago"], keep='last')
         df_final = standard_hours(df_final, 'Hora de Pago')
+        df_final = limpiar_nulos_powerbi(df_final)
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
 
 if __name__ == "__main__":

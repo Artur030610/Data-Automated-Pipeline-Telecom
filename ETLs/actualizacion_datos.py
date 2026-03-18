@@ -10,7 +10,7 @@ sys.path.append(parent_dir)
 
 from config import PATHS, FOLDERS_ACT_DATOS
 # Importamos la función incremental de Polars
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, archivos_raw, ingesta_incremental_polars
+from utils import leer_carpeta, guardar_parquet, reportar_tiempo, console, archivos_raw, ingesta_incremental_polars, standard_hours, limpiar_nulos_powerbi
 
 @reportar_tiempo
 def ejecutar():
@@ -133,6 +133,10 @@ def ejecutar():
     # ---------------------------------------------------------
     subset_duplicados = ["N° Abonado", "Fecha", "Hora", "Detalle Respuesta", "Responsable"]
     df_final = df_total.drop_duplicates(subset=subset_duplicados, keep='last')
+    
+    # --- BLINDAJE PARA POWER BI ---
+    df_final = standard_hours(df_final, 'Hora')
+    df_final = limpiar_nulos_powerbi(df_final)
 
     guardar_parquet(
         df_final, 

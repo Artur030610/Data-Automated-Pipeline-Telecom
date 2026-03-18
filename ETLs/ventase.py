@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 import re
 from config import PATHS
@@ -31,7 +32,7 @@ def ejecutar():
         utils.console.print(f"[yellow]⚠️ La capa Bronze no se actualizó. Error: {e}[/]")
             
     # =========================================================
-    # --- PASO 2: LECTURA FULL DESDE BRONZE (Fuente de Verdad) ---
+    # --- PASO 2: LECTURA FULL DESDE BRONZE ---
     # =========================================================
     if not os.path.exists(RUTA_BRONZE):
         utils.console.print("[red]❌ No se encontró la capa Bronze. Ejecución abortada.[/]")
@@ -61,10 +62,15 @@ def ejecutar():
     }
     df_nuevo = df_nuevo.rename(columns=mapa_columnas)
     
+    # 🚨 NUEVO: ALERTA DE COLUMNAS FALTANTES
     cols_check = ["Paquete/Servicio", "Vendedor", "N° Abonado", "Cliente", "Estatus", "Documento"]
+    columnas_faltantes = [c for c in cols_check if c not in df_nuevo.columns]
+    if columnas_faltantes:
+        utils.console.print(f"[bold yellow]⚠️ ALERTA: Faltan las siguientes columnas en el origen:[/] [white]{', '.join(columnas_faltantes)}[/]")
+
     for col in cols_check:
         if col not in df_nuevo.columns:
-            df_nuevo[col] = "" 
+            df_nuevo[col] = np.nan 
 
     df_nuevo["Paquete/Servicio"] = df_nuevo["Paquete/Servicio"].astype(str).str.upper()
     df_nuevo["Vendedor"] = df_nuevo["Vendedor"].astype(str).str.upper().str.strip()
@@ -77,28 +83,55 @@ def ejecutar():
     patron_oficina = r'.*(?:OFICINA|OFIC|OFI)\s+(.*)$'
     df_nuevo["Oficina"] = df_nuevo["Vendedor"].str.extract(patron_oficina)[0].str.strip()
 
-    df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce")
+    df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce").dt.normalize()
 
     cols_finales = [
         "N° Abonado", "Documento", "Estatus", "Fecha", "Vendedor", 
         "Costo", "Grupo Afinidad", "Nombre Franquicia", "Ciudad", 
-        "Hora", "Tipo de afluencia", "Oficina"
+        "Hora", "Tipo de afluencia", "Oficina", "Fecha_Modificacion_Archivo"
     ]
+    
+    for c in cols_finales:
+        if c not in df_nuevo.columns:
+            df_nuevo[c] = np.nan
+            
     df_nuevo = df_nuevo.reindex(columns=cols_finales)
 
     # =========================================================
-    # --- PASO 4: ASEGURAMIENTO DE CALIDAD Y DEDUPLICACIÓN ---
+    # --- PASO 4: ORDENAMIENTO (CDC) Y DEDUPLICACIÓN ---
     # =========================================================
-    # Asignamos directamente la data transformada a df_final
     df_final = df_nuevo.copy()
 
     if not df_final.empty:
         filas_antes = len(df_final)
         
+        # 1. ORDENAMIENTO CRONOLÓGICO POR METADATA (Si existe)
+        if 'Fecha_Modificacion_Archivo' in df_final.columns:
+            utils.console.print("[cyan]⏱️ Ordenando por metadata para preservar el registro más reciente...[/]")
+            df_final = df_final.sort_values(by='Fecha_Modificacion_Archivo', ascending=True)
+        
+# 2. DEDUPLICACIÓN ESTRICTA
         subset_dedup = ["N° Abonado", "Documento", "Hora", "Fecha", "Vendedor"]
         df_final = df_final.drop_duplicates(subset=subset_dedup, keep='last')
+        
+        #  ELIMINAMOS LA COLUMNA FANTASMA (Hizo su trabajo y no sale)
+        if 'Fecha_Modificacion_Archivo' in df_final.columns:
+            df_final = df_final.drop(columns=['Fecha_Modificacion_Archivo'])
+            utils.console.print("[dim]🧹 Metadata CDC eliminada. DataFrame limpio para Power BI.[/]")
+        
+        # =========================================================
+        # --- PASO 5: BLINDAJE POWER BI Y GUARDADO ---
+        # =========================================================
         df_final = utils.standard_hours(df_final, 'Hora')
         
+        if hasattr(utils, 'limpiar_nulos_powerbi'):
+            df_final = utils.limpiar_nulos_powerbi(df_final)
+            
+        # El escudo final contra TYPEMISMATCH
+        cols_texto = df_final.select_dtypes(include=['object']).columns
+        for col in cols_texto:
+            df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
+            
         # 5. GUARDADO EN SILVER
         utils.console.print("\n[bold cyan]💾 Actualizando capas Silver y Gold...[/]")
         utils.guardar_parquet(

@@ -491,9 +491,10 @@ def standard_hours(df, columna_hora):
                         .str.strip())
     
     # 2. Conversión a objeto datetime y luego a string HH:00
+    # CAMBIO: Usamos '' en lugar de 'Sin Registro' para evitar TYPEMISMATCH en Power BI
     df[columna_hora] = (pd.to_datetime(df[columna_hora], errors='coerce')
                         .dt.strftime('%H:00')
-                        .fillna('Sin Registro'))
+                        .fillna(''))
     return df
 
 def tiempo(tiempo_inicio):
@@ -560,6 +561,7 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
     import polars as pl
     import glob
     import os
+    from datetime import datetime
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
     import logging
     
@@ -613,7 +615,18 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
                         ]).alias(columna_fecha)
                     )
                 
-                df = df.with_columns(pl.lit(nombre).alias("Source.Name"))
+                # =========================================================
+                # 🚨 NUEVO: CAPTURA DE METADATA PARA CDC (Change Data Capture)
+                # =========================================================
+                mtime_ts = os.path.getmtime(archivo) # Captura el timestamp de Windows
+                fecha_modificacion = datetime.fromtimestamp(mtime_ts) # Lo convierte a Datetime real
+                
+                df = df.with_columns([
+                    pl.lit(nombre).alias("Source.Name"),
+                    pl.lit(fecha_modificacion).alias("Fecha_Modificacion_Archivo")
+                ])
+                # =========================================================
+
                 dfs_nuevos.append(df)
                 
             except Exception as e:
