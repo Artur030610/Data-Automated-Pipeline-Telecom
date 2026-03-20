@@ -77,7 +77,7 @@ def ejecutar():
     
     df_nuevo = df_nuevo[~df_nuevo["Paquete/Servicio"].str.contains("FIBEX PLAY|FIBEXPLAY", na=False, regex=True)].copy()
     df_nuevo = df_nuevo[~df_nuevo["Vendedor"].str.contains("VENTAS CALLE|AGENTE", regex=True, na=False)].copy()
-
+    df_nuevo = df_nuevo[df_nuevo["Vendedor"].str.contains("OFI", case=False, na=False)].copy()
     df_nuevo["Tipo de afluencia"] = "Ventas"
     
     patron_oficina = r'.*(?:OFICINA|OFIC|OFI)\s+(.*)$'
@@ -110,7 +110,10 @@ def ejecutar():
             utils.console.print("[cyan]⏱️ Ordenando por metadata para preservar el registro más reciente...[/]")
             df_final = df_final.sort_values(by='Fecha_Modificacion_Archivo', ascending=True)
         
-# 2. DEDUPLICACIÓN ESTRICTA
+        # 2. ESTANDARIZAR ANTES DE DEDUPLICAR (Evita falsos duplicados por formato ERP)
+        df_final = utils.standard_hours(df_final, 'Hora')
+
+        # 3. DEDUPLICACIÓN ESTRICTA
         subset_dedup = ["N° Abonado", "Documento", "Hora", "Fecha", "Vendedor"]
         df_final = df_final.drop_duplicates(subset=subset_dedup, keep='last')
         
@@ -122,15 +125,10 @@ def ejecutar():
         # =========================================================
         # --- PASO 5: BLINDAJE POWER BI Y GUARDADO ---
         # =========================================================
-        df_final = utils.standard_hours(df_final, 'Hora')
         
         if hasattr(utils, 'limpiar_nulos_powerbi'):
             df_final = utils.limpiar_nulos_powerbi(df_final)
             
-        # El escudo final contra TYPEMISMATCH
-        cols_texto = df_final.select_dtypes(include=['object']).columns
-        for col in cols_texto:
-            df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
             
         # 5. GUARDADO EN SILVER
         utils.console.print("\n[bold cyan]💾 Actualizando capas Silver y Gold...[/]")

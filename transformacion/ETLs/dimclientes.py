@@ -98,6 +98,7 @@ def ejecutar():
     # NOTA: UNION ALL BY NAME permite que las tablas tengan columnas diferentes o en distinto orden.
     # DuckDB alinea las que coinciden por nombre y pone NULL en las que faltan en una de las partes.
     sql = f"""
+        --sql
         SELECT {cols_str}
         FROM (
             SELECT * FROM ({query_historia})

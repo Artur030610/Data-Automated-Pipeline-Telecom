@@ -126,10 +126,6 @@ def ejecutar():
     df_final = limpiar_nulos_powerbi(df_final)
     df_final = standard_hours(df_final, 'Hora')
     
-    # ⚠️ EL BLINDAJE: Garantizamos que Power BI no explote por los nulos
-    cols_texto = df_final.select_dtypes(include=['object']).columns
-    for col in cols_texto:
-        df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
     
     guardar_parquet(
         df_final, 

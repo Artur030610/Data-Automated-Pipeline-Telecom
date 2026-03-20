@@ -61,6 +61,9 @@ def procesar_reclamos_general():
     # =========================================================
     console.print(f"[cyan]🛠️ Transformando {len(df_nuevo_total)} reclamos generales totales...[/]")
     
+    # EL FIX CRÍTICO: Limpiar nombres de columnas (espacios en blanco ocultos del Excel)
+    df_nuevo_total.columns = df_nuevo_total.columns.str.strip()
+
     df_nuevo_total = df_nuevo_total.rename(columns={"Tipo Llamada": "Origen"})
     
     cols_std = ["N° Abonado", "Estatus", "Saldo", "Fecha Llamada", "Hora Llamada", 
@@ -98,11 +101,6 @@ def procesar_reclamos_general():
     df_final = standard_hours(df_final, 'Hora Llamada')
     df_final = limpiar_nulos_powerbi(df_final)
     
-    cols_texto = df_final.select_dtypes(include=['object']).columns
-    for col in cols_texto:
-        df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
-        if col in ["N° Abonado", "Responsable", "Detalle Respuesta", "Origen"]:
-            df_final[col] = df_final[col].fillna("")
     
     guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_nuevo_total), ruta_destino=PATHS.get("gold", ""))
 
@@ -143,6 +141,8 @@ def procesar_fallas_app():
 
     console.print(f"[cyan]📱 Procesando {len(df_nuevo)} registros totales de APP...[/]")
     
+    df_nuevo.columns = df_nuevo.columns.str.strip()
+
     df_nuevo["Detalle Respuesta"] = df_nuevo["Detalle Respuesta"].astype(str).str.upper()
     df_nuevo["OrdenCategoria"] = df_nuevo.groupby("Detalle Respuesta")["Detalle Respuesta"].transform("count")
     df_nuevo["Fecha Llamada"] = pd.to_datetime(df_nuevo["Fecha Llamada"], dayfirst=True, errors="coerce").dt.normalize()
@@ -171,10 +171,6 @@ def procesar_fallas_app():
         df_final = standard_hours(df_final, 'Hora Llamada')
         df_final = limpiar_nulos_powerbi(df_final)
         
-        cols_texto = df_final.select_dtypes(include=['object']).columns
-        for col in cols_texto:
-            df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
-            
         guardar_parquet(df_final, NOMBRE_GOLD, ruta_destino=PATHS.get("gold", ""))
 
 # -----------------------------------------------------------------------------
@@ -214,6 +210,8 @@ def procesar_fallas_banco():
 
     console.print(f"[cyan]🏦 Procesando {len(df_nuevo)} registros totales de BANCOS...[/]")
     
+    df_nuevo.columns = df_nuevo.columns.str.strip()
+
     target = ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"]
     if "Detalle Respuesta" not in df_nuevo.columns:
         df_nuevo["Detalle Respuesta"] = np.nan
@@ -254,10 +252,6 @@ def procesar_fallas_banco():
         df_final = standard_hours(df_final, 'Hora Llamada')
         df_final = limpiar_nulos_powerbi(df_final)
         
-        cols_texto = df_final.select_dtypes(include=['object']).columns
-        for col in cols_texto:
-            df_final[col] = df_final[col].astype(str).replace(['nan', 'None', 'NaN', 'NaT', '<NA>'], "")
-            
         guardar_parquet(df_final, NOMBRE_GOLD, ruta_destino=PATHS.get("gold", ""))
     else:
         console.print("[yellow]⚠️ Archivos leídos pero sin fallas bancarias relevantes.[/]")

@@ -355,13 +355,14 @@ def limpiar_nulos_powerbi(df):
     # Seleccionamos columnas de tipo objeto
     cols_texto = df_clean.select_dtypes(include=['object']).columns
     
-    # --- CORRECCIÓN 2: LIMPIEZA PROFUNDA CON REGEX ---
-    # 1. Convertir espacios (' '), vacíos ('') y tabs a NaN real
+    # 1. Convertir espacios, vacíos y basura en np.nan
     df_clean[cols_texto] = df_clean[cols_texto].replace(r'^\s*$', np.nan, regex=True)
-    
-    # 2. Convertir textos literales "nan", "None", "null" a NaN real
-    valores_basura = ['nan', 'NaN', 'NAN', 'None', 'null', 'Null']
+    valores_basura = ['nan', 'NaN', 'NAN', 'None', 'null', 'Null', '']
     df_clean[cols_texto] = df_clean[cols_texto].replace(valores_basura, np.nan)
+    
+    # 2. Forzar a que cualquier vacío sea un verdadero None nativo de Python (Parquet lo ama)
+    for col in cols_texto:
+        df_clean[col] = df_clean[col].where(pd.notnull(df_clean[col]), None)
 
     return df_clean
 
@@ -440,7 +441,9 @@ def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None)
 
         # --- LIMPIEZA PARA POWER BI ---
         for col in df.select_dtypes(include=['object']).columns:
-            df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) and x != "" else None)
+            # Convertimos a string SOLO lo que tenga datos reales (preservando el None nativo)
+            mask_valida = df[col].notnull()
+            df.loc[mask_valida, col] = df.loc[mask_valida, col].astype(str)
             
         # GUARDADO FÍSICO
         df.to_parquet(ruta_salida, index=False)
@@ -493,8 +496,7 @@ def standard_hours(df, columna_hora):
     # 2. Conversión a objeto datetime y luego a string HH:00
     # CAMBIO: Usamos '' en lugar de 'Sin Registro' para evitar TYPEMISMATCH en Power BI
     df[columna_hora] = (pd.to_datetime(df[columna_hora], errors='coerce')
-                        .dt.strftime('%H:00')
-                        .fillna(''))
+                        .dt.strftime('%H:00'))
     return df
 
 def tiempo(tiempo_inicio):

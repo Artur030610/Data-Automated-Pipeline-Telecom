@@ -131,8 +131,14 @@ def ejecutar():
     # ---------------------------------------------------------
     # 5. DEDUPLICACIÓN Y GUARDADO
     # ---------------------------------------------------------
+    if 'fecha_mod_archivo' in df_total.columns:
+        df_total = df_total.sort_values(by='fecha_mod_archivo', ascending=True)
+        
     subset_duplicados = ["N° Abonado", "Fecha", "Hora", "Detalle Respuesta", "Responsable"]
     df_final = df_total.drop_duplicates(subset=subset_duplicados, keep='last')
+    
+    if 'fecha_mod_archivo' in df_final.columns:
+        df_final = df_final.drop(columns=['fecha_mod_archivo'])
     
     # --- BLINDAJE PARA POWER BI ---
     df_final = standard_hours(df_final, 'Hora')

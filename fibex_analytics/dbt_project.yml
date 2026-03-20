@@ -30,6 +30,7 @@ clean-targets:         # directories to be removed by `dbt clean`
 # files using the `{{ config(...) }}` macro.
 models:
   fibex_analytics:
-    # Config indicated by + and applies to all files under models/example/
-    example:
-      +materialized: view
+    # Todo lo que esté en la carpeta "models/gold" se guardará como Parquet por defecto
+    gold:
+      +materialized: external
+      +format: parquet

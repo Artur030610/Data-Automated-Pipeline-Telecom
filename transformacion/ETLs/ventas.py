@@ -4,7 +4,7 @@ import os
 from config import PATHS, LISTA_VENDEDORES_OFICINA, LISTA_VENDEDORES_PROPIOS, MAPA_MESES
 from utils import (
     guardar_parquet, reportar_tiempo, console, 
-    ingesta_incremental_polars 
+    ingesta_incremental_polars, limpiar_nulos_powerbi
 )
 
 # --- LÓGICA DE CLASIFICACIÓN (Mantenida 100% igual) ---
@@ -48,7 +48,8 @@ def ejecutar():
         "ID", "N° Abonado", "Fecha Contrato", "Estatus", "Suscripción", 
         "Grupo Afinidad", "Nombre Franquicia", "Ciudad", "Vendedor", 
         "Serv/Paquete", "nombre_detectado", "Estado", "oficina_comercial", 
-        "tipo_coincidencia", "fuzzy_score_nombre", "fuzzy_score_apellido", "fuzzy_score_combinado"
+        "tipo_coincidencia", "fuzzy_score_nombre", "fuzzy_score_apellido", 
+        "fuzzy_score_combinado", "Fecha_Modificacion_Archivo"
     ]
 
     # =========================================================
@@ -127,11 +128,24 @@ def ejecutar():
 
     if not df_final.empty:
         filas_antes = len(df_final)
+        
+        # 1. ORDENAMIENTO CRONOLÓGICO POR METADATA (Si existe)
+        if 'Fecha_Modificacion_Archivo' in df_final.columns:
+            console.print("[cyan]⏱️ Ordenando por metadata para preservar el registro más reciente...[/]")
+            df_final = df_final.sort_values(by='Fecha_Modificacion_Archivo', ascending=True)
+            
         # Último seguro contra duplicados por clave de negocio
         df_final = df_final.drop_duplicates(
             subset=["N° Abonado", "Fecha Contrato", "Vendedor", "Ciudad"], 
             keep='last'
         )
+        
+        # ELIMINAMOS LA COLUMNA FANTASMA (Hizo su trabajo y no sale a PBI)
+        if 'Fecha_Modificacion_Archivo' in df_final.columns:
+            df_final = df_final.drop(columns=['Fecha_Modificacion_Archivo'])
+        
+        # BLINDAJE CONTRA NULOS Y TYPEMISMATCH EN POWER BI
+        df_final = limpiar_nulos_powerbi(df_final)
         
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
 

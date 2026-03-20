@@ -35,7 +35,7 @@ $carpetas = @(
     "11-Act. de Datos\3-OBSERVACIONES",
     "12-Comebackhome",
     "13-Puntos azules",
-    "14-Universo Asesores",
+    "14-Universo de asesores",
     "15-Estados y Ciudades",
     "16-Historico de abonados",
     "16-Historico de abonados\1-Historico",
