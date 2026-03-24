@@ -85,9 +85,6 @@ def ejecutar(ruta_silver=None):
     # -------------------------------------------------------------------------
     df_final = limpiar_nulos_powerbi(df_silver)
     
-    # Deduplicación global de seguridad
-    subset_cols = [c for c in ["N° Abonado", "Fecha", "Hora", "Tipo de afluencia", "Vendedor", "Oficina"] if c in df_final.columns]
-    df_final = df_final.drop_duplicates(subset=subset_cols, keep='last')
 
     if not df_final.empty:
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=len(df_final))

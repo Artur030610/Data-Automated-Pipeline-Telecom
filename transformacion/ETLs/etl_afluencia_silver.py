@@ -152,8 +152,7 @@ def ejecutar():
     df_total.drop(columns=['Vendedor_Clean'], inplace=True)
 
     # --- PASO 3: DEDUPLICACIÓN Y GUARDADO ---
-    subset_cols = ["N° Abonado", "Fecha", "Hora", "Tipo de afluencia", "Vendedor"]
-    df_final = df_total.drop_duplicates(subset=[c for c in subset_cols if c in df_total.columns], keep='last')
+    df_final = df_total.copy()
 
     guardar_parquet(df_final, nombre_archivo_silver, filas_iniciales=len(df_final), ruta_destino=PATHS["silver"])
     console.print(f"[bold green]✨ Silver Consolidado generado: {len(df_final):,} registros únicos.[/]")

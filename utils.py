@@ -654,33 +654,35 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
         console.print(f"[cyan]🔄 Cruzando con histórico: {os.path.basename(ruta_bronze_historico)}...[/]")
         
         try:
-            with open(ruta_bronze_historico, "rb") as f:
-                df_historico = pl.read_parquet(f, use_pyarrow=False)
+            # 1. Usamos LazyFrames para NO subir 5M de registros a RAM
+            lf_historico = pl.scan_parquet(ruta_bronze_historico)
+            lf_nuevo = df_nuevo_completo.lazy()
             
             if columna_fecha and fechas_nuevas:
                 # =========================================================
                 # NIVELADOR ESTRICTO A FECHA (DATE PUREZA 100%)
                 # =========================================================
-                tipo_columna = df_historico.schema.get(columna_fecha)
+                tipo_columna = lf_historico.collect_schema().get(columna_fecha)
                 
                 if tipo_columna in [pl.Utf8, pl.String]:
                     # Si Pandas lo guardó como texto, cortamos los primeros 10 caracteres (YYYY-MM-DD) y parseamos
-                    df_historico = df_historico.with_columns(
+                    lf_historico = lf_historico.with_columns(
                         pl.col(columna_fecha).str.slice(0, 10).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias(columna_fecha)
                     )
                 else:
                     # Si ya es datetime o numérico, lo casteamos directo
-                    df_historico = df_historico.with_columns(
+                    lf_historico = lf_historico.with_columns(
                         pl.col(columna_fecha).cast(pl.Date, strict=False).alias(columna_fecha)
                     )
                 
                 # Ahora sí, el cruce es Date vs Date
-                df_historico_limpio = df_historico.filter(
+                lf_historico_limpio = lf_historico.filter(
                     ~pl.col(columna_fecha).is_in(fechas_nuevas)
                 )
-                df_final = pl.concat([df_historico_limpio, df_nuevo_completo], how="diagonal")
+                df_final = pl.concat([lf_historico_limpio, lf_nuevo], how="diagonal").collect()
             else:
-                df_final = pl.concat([df_historico, df_nuevo_completo], how="diagonal").unique()
+                # Unimos y recolectamos al final de forma eficiente
+                df_final = pl.concat([lf_historico, lf_nuevo], how="diagonal").unique().collect()
             
             ruta_temp = ruta_bronze_historico + ".tmp"
             df_final.write_parquet(ruta_temp, compression="snappy")

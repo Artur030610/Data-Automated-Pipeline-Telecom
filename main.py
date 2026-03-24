@@ -4,7 +4,7 @@ from rich.table import Table
 from rich.prompt import Prompt
 from config import THEME_COLOR
 import time 
-from utils import tiempo, audit_performance
+from utils import tiempo, audit_performance 
 
 # ========================================================
 # 1. IMPORTACIÓN DE MÓDULOS (ETLs)

@@ -3,10 +3,12 @@ import numpy as np
 import os
 import sys
 import glob 
+import polars as pl
+import duckdb
+import gc
 
-# --- CAMBIO 1: IMPORTAMOS LA NUEVA FUNCIÓN DE POLARS ---
-from utils import standard_hours, leer_carpeta, guardar_parquet, reportar_tiempo, console, ingesta_inteligente, obtener_rango_fechas, limpiar_nulos_powerbi
-from utils import ingesta_incremental_polars  # <--- NUEVO
+from utils import  reportar_tiempo, console
+from utils import ingesta_incremental_polars  
 
 # --- EL TRUCO DEL ASCENSOR ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,6 +17,20 @@ sys.path.append(parent_dir)
 # -----------------------------
 
 from config import PATHS, MAPA_MESES
+
+# --- CONSTANTES DE NEGOCIO ---
+OFICINAS_PROPIAS = [
+    'OFC COMERCIAL CUMANA', 'OFC- LA ASUNCION', 'OFC SAN ANTONIO DE CAPYACUAL', 
+    'OFC TINACO', 'OFC VILLA ROSA', 'OFC-SANTA FE', 'OFI CARIPE MONAGAS', 
+    'OFI TINAQUILLO', 'OFI-BARCELONA', 'OFI-BARINAS', 'OFI-BQTO', 
+    'OFIC GALERIA EL PARAISO', 'OFIC SAMBIL-VALENCIA', 'OFIC. PARRAL VALENCIA', 
+    'OFIC. TORRE FIBEX VIÑEDO', 'OFI-CARACAS PROPATRIA', 'OFIC-BOCA DE UCHIRE', 
+    'OFIC-CARICUAO', 'OFIC-COMERCIAL SANTA FE', 'OFICINA ALIANZA MALL', 
+    'OFICINA MARGARITA', 'OFICINA SAN JUAN DE LOS MORROS', 'OFIC-JUAN GRIEGO-MGTA', 
+    'OFIC-METROPOLIS-BQTO', 'OFIC-MGTA_DIAZ', 'OFI-LECHERIA', 'OFI-METROPOLIS', 
+    'OFI-PARAISO', 'OFI-PASEO LAS INDUSTRIAS', 'OFI-PTO CABELLO', 'OFI-PTO LA CRUZ', 
+    'OFI-SAN CARLOS', 'OFI-VIA VENETO'
+]
 
 @reportar_tiempo
 def ejecutar():
@@ -48,124 +64,166 @@ def ejecutar():
         ingesta_incremental_polars(
             ruta_raw=RUTA_RAW_HORAS,
             ruta_bronze_historico=RUTA_BRONZE_HORAS,
-            columna_fecha=None  # Sin fecha para habilitar Append+Unique en Polars
+            columna_fecha=None  
         )
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze de Horas no se actualizó. Error: {e}[/]")
 
     # =========================================================
-    # --- PASO 2: LECTURA FULL DESDE AMBOS BRONZE ---
+    # --- PASO 2, 3 Y 4: PROCESAMIENTO LAZY Y MERGE CON DUCKDB ---
     # =========================================================
     if not os.path.exists(RUTA_BRONZE):
         console.print("[red]❌ No se encontró la capa Bronze de Recaudación. Ejecución abortada.[/]")
         return
         
-    console.print("[cyan]📥 Leyendo histórico completo desde capa Bronze (Recaudación)...[/]")
-    df_nuevo = pd.read_parquet(RUTA_BRONZE)
-
-    if df_nuevo.empty:
-        console.print("[bold green]✅ No hay datos de Recaudación en Bronze para procesar.[/]")
-        return
-
-    # Leemos el histórico de horas
-    df_horas = pd.DataFrame()
-    if os.path.exists(RUTA_BRONZE_HORAS):
-        console.print("[cyan]📥 Leyendo histórico completo desde capa Bronze (Horas)...[/]")
-        df_horas = pd.read_parquet(RUTA_BRONZE_HORAS)
-    else:
-        console.print("[warning]⚠️ No se encontró Bronze de Horas. Se asignarán horas en blanco.[/]")
-
-    # =========================================================
-    # --- PASO 3: PROCESAMIENTO PANDAS (Lógica de Negocio) ---
-    # =========================================================
-    console.print(f"[cyan]🛠️ Transformando {len(df_nuevo)} pagos totales...[/]")
+    console.print("[cyan]🦆 Procesando y cruzando de forma 100% Nativa con DuckDB (Out-Of-Core, RAM casi cero)...[/]")
     
-    cols_input_recaudacion = [
-        "ID Contrato", "ID Pago", "N° Abonado", "Fecha", "Total Pago", 
-        "Forma de Pago", "Banco", "Oficina Cobro", 
-        "Fecha Contrato", "Estatus", "Suscripción", "Grupo Afinidad", 
-        "Nombre Franquicia", "Ciudad", "Cobrador"
-    ]
-    df_nuevo = df_nuevo.reindex(columns=cols_input_recaudacion)
-
-    def limpiar_id(serie):
-        return (serie.astype(str)
-                .str.replace("'", "", regex=False) 
-                .str.replace(r'\.0$', '', regex=True)
-                .str.strip())
-
-    df_nuevo['ID Pago'] = limpiar_id(df_nuevo['ID Pago'])
-    df_nuevo = df_nuevo.drop_duplicates(subset=["ID Pago"])
-
-    # --- FUSIÓN CON HORAS (Lógica Blindada contra Columnas Duplicadas) ---
-    if not df_horas.empty:
-        # 1. Resolvemos el conflicto si Polars trajo ambas columnas ("ID Pago" e "ID pago")
-        if "ID pago" in df_horas.columns and "ID Pago" in df_horas.columns:
-            df_horas["ID Pago"] = df_horas["ID Pago"].fillna(df_horas["ID pago"])
-            df_horas = df_horas.drop(columns=["ID pago"])
-        elif "ID pago" in df_horas.columns:
-            df_horas = df_horas.rename(columns={"ID pago": "ID Pago"})
-            
-        # 2. Ahora es 100% seguro aplicar la limpieza a la Serie
-        df_horas['ID Pago'] = limpiar_id(df_horas['ID Pago'])
-        df_horas = df_horas.drop_duplicates(subset=['ID Pago'])
+    try:
+        con = duckdb.connect(database=':memory:')
+        con.execute("PRAGMA threads=2") 
+        con.execute("PRAGMA memory_limit='2GB'") 
+        con.execute("SET preserve_insertion_order=false") 
         
-        # 3. Cruzamos directamente los dos históricos maestros
-        df_nuevo = df_nuevo.merge(df_horas[['ID Pago', 'Hora de Pago']], on='ID Pago', how='left')
-    else:
-        df_nuevo['Hora de Pago'] = None
+        temp_dir = os.path.join(PATHS.get("bronze", "data/bronze"), "duckdb_temp").replace("\\", "/")
+        os.makedirs(temp_dir, exist_ok=True)
+        con.execute(f"PRAGMA temp_directory='{temp_dir}'")
 
-    # --- LÓGICA DE NEGOCIO ---
-    df_nuevo['N° Abonado'] = df_nuevo['N° Abonado'].astype(str).replace('nan', None)
-    df_nuevo['ID Contrato'] = df_nuevo['ID Contrato'].astype(str).replace('nan', None)
-    df_nuevo["Fecha"] = pd.to_datetime(df_nuevo["Fecha"], dayfirst=True, errors="coerce")
-    df_nuevo['Total Pago'] = pd.to_numeric(df_nuevo['Total Pago'], errors='coerce').fillna(0)
+        # Exploración Lazy del Schema (Sin subir datos a la RAM)
+        schema_rec_lower = {c.lower(): c for c in pl.scan_parquet(RUTA_BRONZE).collect_schema().names()}
+        
+        if "id pago" not in schema_rec_lower:
+            console.print("[bold green]✅ No se detectó 'ID Pago' en la estructura. Operación abortada de forma segura.[/]")
+            return
+            
+        def safe_col_name(col_name):
+            return f'"{schema_rec_lower[col_name.lower()]}"' if col_name.lower() in schema_rec_lower else "NULL"
 
-    palabras_excluir = "VIRTUAL|Virna|Fideliza|Externa|Unicenter|Compensa"
-    df_nuevo = df_nuevo[~df_nuevo['Oficina Cobro'].astype(str).str.contains(palabras_excluir, case=False, na=False, regex=True)].copy()
+        def safe_cast(col_name, data_type="VARCHAR", default="NULL"):
+            if col_name.lower() in schema_rec_lower:
+                real_name = schema_rec_lower[col_name.lower()]
+                return f'COALESCE(CAST(r."{real_name}" AS {data_type}), {default})'
+            return default
 
-    df_nuevo['Tipo de afluencia'] = "RECAUDACIÓN"
-    df_nuevo['Mes'] = df_nuevo['Fecha'].dt.month.map(MAPA_MESES)
+        # Manejo de Horas nativo de DuckDB
+        join_horas = ""
+        hora_select = "'00:00'"
+        
+        if os.path.exists(RUTA_BRONZE_HORAS):
+            schema_h_lower = {c.lower(): c for c in pl.scan_parquet(RUTA_BRONZE_HORAS).collect_schema().names()}
+            if "id pago" in schema_h_lower and "hora de pago" in schema_h_lower:
+                id_col_h = schema_h_lower["id pago"]
+                hora_col_h = schema_h_lower["hora de pago"]
+                join_horas = f"""
+                LEFT JOIN (
+                    SELECT 
+                        TRIM(REGEXP_REPLACE(CAST("{id_col_h}" AS VARCHAR), '\\.0$', '')) AS id_pago_norm, 
+                        MAX("{hora_col_h}") AS hora_pago
+                    FROM read_parquet('{RUTA_BRONZE_HORAS.replace("\\", "/")}')
+                    WHERE "{id_col_h}" IS NOT NULL
+                    GROUP BY 1
+                ) h ON r.id_pago_norm = h.id_pago_norm
+                """
+                hora_select = """COALESCE(
+                    LPAD(EXTRACT('hour' FROM TRY_CAST(TRY_CAST(h.hora_pago AS TIMESTAMP) AS TIME))::VARCHAR, 2, '0') || ':00', 
+                    LPAD(EXTRACT('hour' FROM TRY_CAST(h.hora_pago AS TIME))::VARCHAR, 2, '0') || ':00', 
+                    REGEXP_EXTRACT(CAST(h.hora_pago AS VARCHAR), '([0-9]{2}):', 1) || ':00', 
+                    '00:00'
+                )"""
+            else:
+                console.print("[warning]⚠️ El Bronze de Horas no tiene las columnas requeridas.[/]")
+        else:
+            console.print("[warning]⚠️ No se encontró Bronze de Horas. Se asignarán horas en blanco.[/]")
 
-    oficinas_propias = [
-        "OFC COMERCIAL CUMANA", "OFC- LA ASUNCION", "OFC SAN ANTONIO DE CAPYACUAL", "OFC TINACO", 
-        "OFC VILLA ROSA", "OFC-SANTA FE", "OFI CARIPE MONAGAS", "OFI TINAQUILLO", "OFI-BARCELONA", 
-        "OFI-BARINAS", "OFI-BQTO", "OFIC GALERIA EL PARAISO", "OFIC SAMBIL-VALENCIA", 
-        "OFIC. PARRAL VALENCIA", "OFIC. TORRE FIBEX VIÑEDO", "OFI-CARACAS PROPATRIA", 
-        "OFIC-BOCA DE UCHIRE", "OFIC-CARICUAO", "OFIC-COMERCIAL SANTA FE", "OFICINA ALIANZA MALL", 
-        "OFICINA MARGARITA", "OFICINA SAN JUAN DE LOS MORROS", "OFIC-JUAN GRIEGO-MGTA", 
-        "OFIC-METROPOLIS-BQTO", "OFIC-MGTA_DIAZ", "OFI-LECHERIA", "OFI-METROPOLIS", "OFI-PARAISO", 
-        "OFI-PASEO LAS INDUSTRIAS", "OFI-PTO CABELLO", "OFI-PTO LA CRUZ", "OFI-SAN CARLOS", "OFI-VIA VENETO"
-    ]
-    
-    df_nuevo['Clasificacion'] = np.where(
-        df_nuevo['Oficina Cobro'].isin(oficinas_propias), 
-        "OFICINAS PROPIAS", 
-        "ALIADOS Y DESARROLLO"
-    )
-    
-    df_nuevo = df_nuevo.rename(columns={"Oficina Cobro": "Oficina", "Cobrador": "Vendedor"})
-    
-    cols_output = [
-        "ID Contrato", "ID Pago", "N° Abonado", "Fecha", "Total Pago", 
-        "Forma de Pago", "Banco", "Oficina", "Fecha Contrato", 
-        "Estatus", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
-        "Ciudad", "Vendedor", "Tipo de afluencia", "Mes", "Clasificacion",
-        "Hora de Pago"
-    ]
-    df_nuevo = df_nuevo.reindex(columns=cols_output)
+        # Convertimos la lista de Python a una cadena SQL lista para el IN (...)
+        oficinas_sql = ", ".join([f"'{ofi}'" for ofi in OFICINAS_PROPIAS])
 
-    # =========================================================
-    # --- PASO 4: ESCRITURA FULL EN CAPA GOLD ---
-    # =========================================================
-    df_final = df_nuevo.copy()
-
-    if not df_final.empty:
-        filas_antes = len(df_final)
-        df_final = df_final.drop_duplicates(subset=["ID Pago"], keep='last')
-        df_final = standard_hours(df_final, 'Hora de Pago')
-        df_final = limpiar_nulos_powerbi(df_final)
-        guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
+        # Consulta SQL para procesamiento "Out-of-Core" (Usa disco si se llena la RAM)
+        query = f"""--sql
+        COPY (
+            WITH 
+            Recaudacion AS (
+                SELECT 
+                    *,
+                    -- CRÍTICO: Normalizamos el ID Pago limpiando los decimales .0 y espacios para asegurar el match
+                    TRIM(REGEXP_REPLACE(CAST({safe_col_name('ID Pago')} AS VARCHAR), '\\.0$', '')) AS id_pago_norm
+                FROM read_parquet('{RUTA_BRONZE.replace("\\", "/")}')
+                WHERE {safe_col_name('ID Pago')} IS NOT NULL
+                  AND NOT REGEXP_MATCHES(COALESCE(CAST({safe_col_name('Oficina Cobro')} AS VARCHAR), ''), '(?i)VIRTUAL|Virna|Fideliza|Externa|Unicenter|Compensa')
+            ),
+            Cruce AS (
+                SELECT 
+                    {safe_cast('ID Contrato', 'VARCHAR', "NULL")} AS "ID Contrato",
+                    {safe_cast('ID Pago', 'VARCHAR', "NULL")} AS "ID Pago",
+                    {safe_cast('N° Abonado', 'VARCHAR', "''")} AS "N° Abonado",
+                    
+                    COALESCE(
+                        TRY_CAST({safe_col_name('Fecha')} AS DATE),
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%d/%m/%Y %H:%M:%S')::DATE,
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%d/%m/%Y')::DATE,
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%d-%m-%Y %H:%M:%S')::DATE,
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%d-%m-%Y')::DATE,
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%Y-%m-%d %H:%M:%S')::DATE,
+                        TRY_STRPTIME(CAST({safe_col_name('Fecha')} AS VARCHAR), '%Y-%m-%d')::DATE
+                    ) AS "Fecha",
+                    
+                    COALESCE(TRY_CAST(REPLACE(CAST({safe_col_name('Total Pago')} AS VARCHAR), ',', '.') AS DOUBLE), 0.0) AS "Total Pago",
+                    {safe_cast('Forma de Pago', 'VARCHAR', "''")} AS "Forma de Pago",
+                    {safe_cast('Banco', 'VARCHAR', "''")} AS "Banco",
+                    {safe_cast('Oficina Cobro', 'VARCHAR', "''")} AS "Oficina",
+                    {safe_cast('Fecha Contrato', 'VARCHAR', "NULL")} AS "Fecha Contrato",
+                    {safe_cast('Estatus', 'VARCHAR', "''")} AS "Estatus",
+                    {safe_cast('Suscripción', 'VARCHAR', "''")} AS "Suscripción",
+                    {safe_cast('Grupo Afinidad', 'VARCHAR', "''")} AS "Grupo Afinidad",
+                    {safe_cast('Nombre Franquicia', 'VARCHAR', "''")} AS "Nombre Franquicia",
+                    {safe_cast('Ciudad', 'VARCHAR', "''")} AS "Ciudad",
+                    {safe_cast('Cobrador', 'VARCHAR', "''")} AS "Vendedor",
+                    'RECAUDACIÓN' AS "Tipo de afluencia",
+                    
+                    CASE 
+                        WHEN {safe_cast('Oficina Cobro', 'VARCHAR', "''")} IN ({oficinas_sql}) THEN 'OFICINAS PROPIAS'
+                        ELSE 'ALIADOS Y DESARROLLO'
+                    END AS "Clasificacion",
+                    
+                    {hora_select} AS "Hora de Pago"
+                    
+                FROM Recaudacion r
+                {join_horas}
+            )
+            SELECT 
+                "ID Contrato", 
+                "N° Abonado", 
+                "Fecha", 
+                "Total Pago", 
+                "Forma de Pago", 
+                "Banco", 
+                "Oficina", 
+                "Fecha Contrato", 
+                "Estatus", 
+                "Suscripción", 
+                "Grupo Afinidad", 
+                "Nombre Franquicia", 
+                "Ciudad", 
+                "Vendedor", 
+                "Tipo de afluencia", 
+                "Clasificacion",
+                "Hora de Pago"
+            FROM Cruce
+            -- Deduplicación Nativa equivalente a Polars .unique(keep="last")
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY "ID Pago" ORDER BY "Fecha" DESC) = 1
+            
+        ) TO '{RUTA_GOLD_COMPLETA.replace("\\", "/")}' (FORMAT PARQUET, COMPRESSION 'SNAPPY');
+        """
+        
+        console.print("[cyan]⏳ Ejecutando proceso SQL Out-Of-Core directo a Disco...[/]")
+        con.execute(query)
+        con.close()
+        
+        console.print(f"[bold green]✅ Archivo {NOMBRE_GOLD} generado y exportado exitosamente (RAM casi Cero).[/]")
+        
+    except Exception as e:
+        console.print(f"[bold red]❌ Error ejecutando motor DuckDB: {e}[/]")
+        console.print(f"[bold red]❌ Error en proceso de Recaudación: {e}[/]")
+        return
 
 if __name__ == "__main__":
     ejecutar()

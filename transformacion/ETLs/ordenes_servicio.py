@@ -57,6 +57,17 @@ ORDEN_FINAL_GOLD_SLA = [
     "Total_Ordenes", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"   
 ]
 
+ORDEN_FINAL_GOLD_IDF = [
+    "Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date", 
+    "Total_Fallas"
+]
+
+# LA JOYA DE LA CORONA PARA DAX (Stats Granulares)
+ORDEN_SLA_STATS = [
+    "Quincena Evaluada", "Franquicia", 
+    "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"
+]
+
 COLS_INPUT_RAW = [
     "FechaInicio", "FechaFin", "FechaInicioQuincena", "Quincena Evaluada",
     "N° Contrato", "Estatus contrato", "N° Orden", "Estatus_orden",
@@ -225,6 +236,25 @@ def ejecutar():
         ).agg(Total_Ordenes=("N° Orden", "nunique"), **{k: (k, "sum") for k in ["SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]})
         
         guardar_parquet(df_gold_sla.reindex(columns=ORDEN_FINAL_GOLD_SLA), "SLA_Gold.parquet", filas_iniciales=len(df_gold_sla), ruta_destino=ruta_gold)
+
+        # --- C. GOLD IDF ---
+        df_gold_idf = df_silver.groupby(
+            ["Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
+            as_index=False
+        ).agg(Total_Fallas=("N° Orden", "nunique"))
+        df_gold_idf = df_gold_idf.reindex(columns=ORDEN_FINAL_GOLD_IDF)
+        guardar_parquet(df_gold_idf, "IDF_Gold.parquet", filas_iniciales=len(df_gold_idf), ruta_destino=ruta_gold)
+
+        # --- D. GOLD SLA-STATS ---
+        console.print("🚀 Generando Gold: SLA-Stats (Precisión absoluta para DAX)...")
+        df_gold_stats = df_silver[["Quincena Evaluada", "Franquicia", "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]].copy()
+        
+        df_gold_stats = df_gold_stats.dropna(subset=['SLA Resolucion Min'])
+        df_gold_stats.loc[df_gold_stats['SLA Resolucion Min'] < 1, 'SLA Resolucion Min'] = 1
+        
+        df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
+        guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)
+
         console.print(f"[bold green]✨ Proceso Finalizado. Tickets Reales: {len(df_total):,}[/]")
 
 if __name__ == "__main__":
