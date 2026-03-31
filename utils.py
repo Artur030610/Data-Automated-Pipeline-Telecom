@@ -19,10 +19,9 @@ from rich.table import Table
 from rich.panel import Panel 
 from config import PATHS, THEME_COLOR 
 import logging
-import time
-from functools import wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+import polars as pl
 
 console = Console(theme=THEME_COLOR)
 warnings.simplefilter(action='ignore')
@@ -92,10 +91,6 @@ def reportar_tiempo(func):
         return result
     return wrapper
 
-import polars as pl
-import glob
-import os
-
 @audit_performance
 def archivos_raw(ruta_raw, ruta_destino_parquet):
     """
@@ -119,7 +114,7 @@ def archivos_raw(ruta_raw, ruta_destino_parquet):
     console.print(f"[bold cyan]🥉 Iniciando consolidación Bronze (RAW) de {len(archivos)} archivos con Polars...[/]")
     
     dfs = []
-    for archivo in archivos:
+    for archivo in archivos_validos:
         nombre = os.path.basename(archivo)
         try:
             # infer_schema_length=0 lee todo como texto para evitar que el script 
@@ -263,9 +258,6 @@ def ingesta_inteligente(ruta_raw, ruta_gold, col_fecha_corte=None, **kwargs):
         col_fecha_corte: Nombre de la columna en el GOLD que usaremos como referencia.
         **kwargs: Argumentos extra para 'leer_carpeta' (ej: filtro_exclusion="Consolidado").
     """
-    import os
-    import glob
-    import pandas as pd
     
     console.rule(f"[bold purple]ANALIZADOR INCREMENTAL (Ref: {col_fecha_corte})[/]")
     
@@ -560,20 +552,6 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
     3. Va al Parquet Histórico (Bronze) y BORRA esas fechas (Estrategia Anti-Bloqueo Windows).
     4. Une el histórico limpio con los datos nuevos y sobrescribe.
     """
-    import polars as pl
-    import glob
-    import os
-    from datetime import datetime
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-    import logging
-    
-    logger = logging.getLogger(__name__)
-    try:
-        from __main__ import console
-    except ImportError:
-        from rich.console import Console
-        console = Console()
-    
     ref_titulo = columna_fecha if columna_fecha else "Append / Unique"
     console.rule(f"[bold purple]⚡ INGESTA INCREMENTAL POLARS (Ref: {ref_titulo})[/]")
     
@@ -621,7 +599,7 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
                 # 🚨 NUEVO: CAPTURA DE METADATA PARA CDC (Change Data Capture)
                 # =========================================================
                 mtime_ts = os.path.getmtime(archivo) # Captura el timestamp de Windows
-                fecha_modificacion = datetime.fromtimestamp(mtime_ts) # Lo convierte a Datetime real
+                fecha_modificacion = datetime.datetime.fromtimestamp(mtime_ts) # Lo convierte a Datetime real
                 
                 df = df.with_columns([
                     pl.lit(nombre).alias("Source.Name"),

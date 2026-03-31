@@ -39,7 +39,7 @@ def login_sae(page: Page, usuario: str = "JOAPEREZ", clave: str = "Jose304*"):
     page.wait_for_selector("a[href='#reportes']", timeout=30000)
     print("✅ [MAIN] Autenticación completada.")
 
-def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 60000, id_tabla: str = "datagrid1"):
+def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 60000, id_tabla: str = "datagrid1", custom_locator=None):
     """
     Emula la lógica de 'subflow2.txt' en Power Automate.
     Espera que la tabla cargue, presiona Exportar a Excel y guarda el archivo.
@@ -60,9 +60,12 @@ def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 60000, id
 
     print("📥 [SUBFLOW 2] Interceptando descarga del archivo...")
     with page.expect_download(timeout=timeout_ms) as download_info:
-        # Seleccionamos explícitamente el botón Excel de la tabla indicada
-        # para evitar el error 'strict mode violation' cuando hay varias tablas en pantalla.
-        page.locator(f"a.buttons-excel[aria-controls='{id_tabla}']").click()
+        if custom_locator is not None:
+            custom_locator.click()
+        else:
+            # Seleccionamos explícitamente el botón Excel de la tabla indicada
+            # para evitar el error 'strict mode violation' cuando hay varias tablas en pantalla.
+            page.locator(f"a.buttons-excel[aria-controls='{id_tabla}']").click()
         
     download = download_info.value
     os.makedirs(os.path.dirname(ruta_destino), exist_ok=True)

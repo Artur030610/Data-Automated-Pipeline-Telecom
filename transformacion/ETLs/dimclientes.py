@@ -53,14 +53,26 @@ def ejecutar():
     # Limpieza ID base
     for col in ["ID", "N° Abonado", "Documento"]:
         if col in df_new.columns:
+            # El .fillna(0) original es problemático: agrupa todos los nulos bajo el ID '0',
+            # causando pérdida de datos en la deduplicación.
+            # Lo reemplazamos por una conversión a string que maneja nulos correctamente.
             df_new[col] = (
-                df_new[col].fillna(0).astype(str)
+                df_new[col].astype(str)
                 .str.replace(r"\.0$", "", regex=True)
                 .str.strip().str.upper()
+                .replace(['NAN', 'NONE', ''], None) # Convertimos basura a None (NULL para SQL)
             )
 
-    df_new["ID2"] = df_new["N° Abonado"] + "-" + df_new["Documento"]
+    # CRÍTICO: Eliminar filas sin un ID principal antes de la deduplicación en DuckDB.
+    # Esto evita que el QUALIFY agrupe todos los registros con ID nulo en uno solo.
+    df_new.dropna(subset=["ID"], inplace=True)
+
+    if df_new.empty:
+        console.print("[warning]⚠️ No quedan datos nuevos con 'ID' válido tras la limpieza. Finalizando.[/]")
+        return
     
+    # Ahora es seguro crear ID2. Usamos .fillna('') para evitar errores si N° Abonado o Documento son None.
+    df_new["ID2"] = df_new["N° Abonado"].fillna('') + "-" + df_new["Documento"].fillna('')
     if "Fecha Contrato" in df_new.columns:
         df_new["Fecha Contrato"] = pd.to_datetime(df_new["Fecha Contrato"], dayfirst=True, errors="coerce")
     

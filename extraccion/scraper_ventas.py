@@ -152,11 +152,13 @@ def descargar_ventas(fecha_inicial_str: str, fecha_final_str: str):
             
         browser.close()
 
-    # ================== POST-PROCESAMIENTO: EJECUTAR SCRIPT FUZZY ==================
-    script_transform = os.path.join(parent_dir, "01-Ventas", "Transformar Archivo de Ventas.py")
-    if os.path.exists(script_transform):
-        console.print(f"\n[bold magenta]✨ Ejecutando limpieza Fuzzy Matching...[/]")
-        subprocess.run([sys.executable, script_transform], check=True)
+    # ================== POST-PROCESAMIENTO: ENRIQUECIMIENTO FUZZY ==================
+    # Se ejecuta un script dedicado que modifica el Excel recién descargado para añadir
+    # la información del vendedor. Esto simplifica el ETL posterior.
+    script_fuzzy = os.path.join(current_dir, "fuzzy_ventas.py")
+    if os.path.exists(script_fuzzy):
+        console.print(f"\n[bold magenta]✨ Ejecutando enriquecimiento Fuzzy Matching sobre el archivo descargado...[/]")
+        subprocess.run([sys.executable, script_fuzzy], check=True)
 
 if __name__ == "__main__":
     descargar_ventas("20/03/2026", "23/03/2026")

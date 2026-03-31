@@ -37,7 +37,6 @@ from transformacion.ETLs import (
     estadistica_abonado
 )
 
-inicio_global = time.time()
 console = Console(theme=THEME_COLOR)
 
 # ========================================================
@@ -161,13 +160,16 @@ def main():
     opcion = Prompt.ask("\n[bold yellow]¿Qué proceso deseas correr?[/]", choices=list(MENU.keys()), default="1")
     console.print("\n")
     
+    # Iniciamos el cronómetro justo después de la selección del menú
+    inicio_transformacion = time.time()
+    
     seleccion = MENU.get(opcion)
     if seleccion:
         console.rule(f"[bold blue]Iniciando: {seleccion['label']}")
         ejecutar_wrapper(seleccion['target']) 
     
     console.rule("[bold green] FIN DE EJECUCIÓN GLOBAL[/]")
-    tiempo(inicio_global)
+    tiempo(inicio_transformacion)
 
 if __name__ == "__main__":
     main()

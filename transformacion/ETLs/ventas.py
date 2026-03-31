@@ -36,7 +36,7 @@ def clasificar_canal(row):
 
 @reportar_tiempo
 def ejecutar():
-    console.rule("[bold magenta]9. ETL: VENTAS (BRONZE INCREMENTAL / GOLD FULL)[/]")
+    console.rule("[bold magenta]9. ETL: VENTAS (BRONZE INCREMENTAL / GOLD FULL REFRESH)[/]")
     
     # 1. Configuración de Rutas
     RUTA_RAW = PATHS["ventas_abonados"]
@@ -63,7 +63,7 @@ def ejecutar():
             columna_fecha="Fecha Contrato"
         )
     except Exception as e:
-        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó por error de acceso. Error: {e}[/]")
+        console.print(f"[yellow]⚠️ La capa Bronze no se actualizó. Error: {e}[/]")
 
     # =========================================================
     # --- PASO 2: LECTURA FULL DESDE BRONZE (Fuente de Verdad) ---
@@ -144,7 +144,7 @@ def ejecutar():
         if 'Fecha_Modificacion_Archivo' in df_final.columns:
             df_final = df_final.drop(columns=['Fecha_Modificacion_Archivo'])
         
-        # BLINDAJE CONTRA NULOS Y TYPEMISMATCH EN POWER BI
+        # BLINDAJE FINAL CONTRA NULOS Y TYPEMISMATCH EN POWER BI
         df_final = limpiar_nulos_powerbi(df_final)
         
         guardar_parquet(df_final, NOMBRE_GOLD, filas_iniciales=filas_antes)
