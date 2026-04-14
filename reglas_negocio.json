@@ -1,0 +1,38 @@
+{
+    "LISTA_VENDEDORES_OFICINA": [
+        "angelica angulo ofic aragua",
+        "marianyeli acosta rodriguez atc ofic turmero aragua",
+        "oficina bejuma",
+        "gisel haideen becerra gimenez"
+    ],
+    "LISTA_VENDEDORES_PROPIOS": [
+        "carlos alberto pereira",
+        "carlos javier perez cribas",
+        "maria alejandra marquez rivas"
+    ],
+    "FILTROS_EXCLUSION_GLOBAL": ["~$", "Consolidado", "Resumen"],
+    "EXCLUSIONES_RECAUDACION": [
+        "unicenter",
+        "virtua",
+        "virna",
+        "externa",
+        "fideliz",
+        "compensacion"
+    ],
+    "ESTATUS_VENTAS": [
+        "ACTIVO",
+        "POR INSTALAR",
+        "OBSTRUCCION",
+        "POR IMPLEMENTACION",
+        "POR VGT",
+        "POR REVISAR"
+    ],
+    "FALLAS_BANCO_TARGET": [
+        "FALLA BNC",
+        "FALLA CON BDV",
+        "FALLA CON R4",
+        "FALLA MERCANTIL"
+    ],
+    "TELEGRAM_TOKEN": "AQUI_TU_TOKEN",
+    "TELEGRAM_CHAT_ID": "AQUI_TU_CHAT_ID"
+}

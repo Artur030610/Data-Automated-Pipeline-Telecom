@@ -1,5 +1,6 @@
 import os
 from rich.theme import Theme
+import json
 
 # =============================================================================
 # 1. CONFIGURACIÓN DE RUTAS BASE
@@ -103,16 +104,22 @@ THEME_COLOR = Theme({
 # =============================================================================
 # 5. LISTAS DE CLASIFICACIÓN (Para Ventas Listado)
 # =============================================================================
+ruta_reglas = os.path.join(os.path.dirname(__file__), "reglas_negocio.json")
+if os.path.exists(ruta_reglas):
+    with open(ruta_reglas, "r", encoding="utf-8") as f:
+        REGLAS = json.load(f)
+else:
+    REGLAS = {}
 
-LISTA_VENDEDORES_OFICINA = [
-    "angelica angulo ofic aragua",
-    "marianyeli acosta rodriguez atc ofic turmero aragua",
-    "oficina bejuma",
-    "gisel haideen becerra gimenez"
-]
+LISTA_VENDEDORES_OFICINA = REGLAS.get("LISTA_VENDEDORES_OFICINA", [])
+LISTA_VENDEDORES_PROPIOS = REGLAS.get("LISTA_VENDEDORES_PROPIOS", [])
+FILTROS_EXCLUSION_GLOBAL = REGLAS.get("FILTROS_EXCLUSION_GLOBAL", ["~$", "Consolidado", "Resumen"])
 
-LISTA_VENDEDORES_PROPIOS = [
-    "carlos alberto pereira",
-    "carlos javier perez cribas",
-    "maria alejandra marquez rivas"
-]
+# --- REGLAS DE NEGOCIO PARA EXTRACCIÓN (SCRAPERS) ---
+EXCLUSIONES_RECAUDACION = REGLAS.get("EXCLUSIONES_RECAUDACION", ["unicenter", "virtua", "virna", "externa", "fideliz", "compensacion"])
+ESTATUS_VENTAS = REGLAS.get("ESTATUS_VENTAS", ["ACTIVO", "POR INSTALAR", "OBSTRUCCION", "POR IMPLEMENTACION", "POR VGT", "POR REVISAR"])
+FALLAS_BANCO_TARGET = REGLAS.get("FALLAS_BANCO_TARGET", ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"])
+
+# --- CREDENCIALES DE ALERTAS (TELEGRAM) ---
+TELEGRAM_TOKEN = REGLAS.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = REGLAS.get("TELEGRAM_CHAT_ID", "")

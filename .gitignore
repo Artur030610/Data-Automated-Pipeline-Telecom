@@ -18,6 +18,7 @@ logs/
 *.log
 npm-debug.log
 *.csv
+# --- ARCHIVOS DE TEXTO ---
 *.txt
 # --- EXCEL / DATA ---
 ~$*.xlsx

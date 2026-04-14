@@ -13,7 +13,8 @@ from config import (
     PATHS, 
     FOLDERS_RECLAMOS_GENERAL, 
     SUB_RECLAMOS_APP, 
-    SUB_RECLAMOS_BANCO
+    SUB_RECLAMOS_BANCO,
+    FALLAS_BANCO_TARGET
 )
 from utils import guardar_parquet, console, reportar_tiempo, ingesta_incremental_polars, standard_hours, limpiar_nulos_powerbi
 
@@ -212,7 +213,7 @@ def procesar_fallas_banco():
     
     df_nuevo.columns = df_nuevo.columns.str.strip()
 
-    target = ["FALLA BNC", "FALLA CON BDV", "FALLA CON R4", "FALLA MERCANTIL"]
+    target = FALLAS_BANCO_TARGET
     if "Detalle Respuesta" not in df_nuevo.columns:
         df_nuevo["Detalle Respuesta"] = np.nan
         

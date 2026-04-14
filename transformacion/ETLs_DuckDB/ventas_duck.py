@@ -26,17 +26,7 @@ def ejecutar_etl():
     directorio_actual = os.path.dirname(__file__) # Estamos en: ETLs_DuckDB
     ruta_sql = os.path.join(directorio_actual, 'sql', 'ventas.sql')
 
-    # NAVEGACIÓN: Del script hacia la carpeta Gold en Data Pipelines
-    # Subimos 2 niveles: ETLs_DuckDB (0) -> 02-Scripts (-1) -> 01-Proyectos (-2)
-    ruta_base_proyectos = os.path.abspath(os.path.join(directorio_actual, '..', '..'))
-    
-    # Bajamos a: 01-Data_PipelinesFibex/02_Data_Lake/gold_data
-    carpeta_gold = os.path.join(
-        ruta_base_proyectos, 
-        '01-Data_PipelinesFibex', 
-        '02_Data_Lake', 
-        'gold_data'
-    )
+    carpeta_gold = str(PATHS.get("gold"))
     
     # Creamos la carpeta si no existe
     os.makedirs(carpeta_gold, exist_ok=True)

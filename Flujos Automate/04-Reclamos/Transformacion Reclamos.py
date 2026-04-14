@@ -3,6 +3,13 @@ import glob
 import os
 import sys
 import warnings
+
+# --- EL TRUCO DEL ASCENSOR ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+scripts_dir = os.path.abspath(os.path.join(current_dir, '..', '..'))
+sys.path.append(scripts_dir)
+
+from config import PATHS
 from rich.console import Console
 from rich.panel import Panel
 from rich.theme import Theme
@@ -15,14 +22,11 @@ warnings.simplefilter(action='ignore')
 # ==========================================
 # 1. CONFIGURACIÓN GLOBAL (RUTAS)
 # ==========================================
-USUARIO = os.path.expanduser("~")
-RUTA_BASE = os.path.join(USUARIO, "Documents", "A-DataStack", "01-Proyectos", "01-Data_PipelinesFibex", "02_Data_Lake")
-
 CONFIG = {
     # Raíz donde están todas las carpetas numéricas
-    "raw_root": os.path.join(RUTA_BASE, "raw_data", "3-Reclamos"), 
+    "raw_root": str(PATHS.get("raw_reclamos")), 
     
-    "gold": os.path.join(RUTA_BASE, "gold_data"),
+    "gold": str(PATHS.get("gold")),
     
     # LISTA DE CARPETAS QUE COMPONEN EL REPORTE GENERAL
     "folders_general": [

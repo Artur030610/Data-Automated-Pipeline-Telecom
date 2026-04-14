@@ -3,137 +3,132 @@ import sys
 import datetime
 import re
 from playwright.sync_api import sync_playwright
-from scraper_utils import login_sae
+from scraper_utils import login_sae, ejecutar_descarga, llenar_fechas_sae, mostrar_todas_columnas, descargar_listado_llamadas
 
 # --- EL TRUCO DEL ASCENSOR PARA IMPORTAR UTILS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
+from config import PATHS
 from utils import reportar_tiempo, console
 
-@reportar_tiempo
-def descargar_atc(fecha_inicial_str: str, fecha_final_str: str):
-    console.print(f" [bold cyan]🎧 Iniciando extracción de Atención al Cliente ({fecha_inicial_str} - {fecha_final_str})...[/]")
+def descargar_observaciones(page, fecha_inicial_str, fecha_final_str):
+    """
+    Navega a la sección de Reporte de Observaciones, aplica el filtro específico y descarga.
+    """
+    console.print(f" [bold blue]-- Iniciando descarga de: Reporte de Observaciones...[/]")
     
-    # =========================================================
-    # 1. FECHAS Y NOMBRES DE ARCHIVO
-    # =========================================================
-    f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
-    f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
+    # --- NAVEGACIÓN ---
+    console.print("🧭 Navegando al Reporte de Observaciones...")
+    btn_reporte = page.get_by_role("link", name=re.compile(r"Reporte de Observaciones", re.IGNORECASE)).first
     
-    nombre_archivo = f"Data - OCobranza {f_ini.day}-{f_ini.month}-{f_ini.year} al {f_fin.day}-{f_fin.month}-{f_fin.year}.xlsx"
-    
-    # =========================================================
-    # 2. DEFINIMOS LA RUTA DESTINO EXACTA (Ajustar a tu Data Lake)
-    # =========================================================
-    user_profile = os.environ.get("USERPROFILE")
-    ruta_destino = os.path.join(
-        user_profile,
-        "Documents", "A-DataStack", "01-Proyectos", "01-Data_PipelinesFibex", 
-        "02_Data_Lake", "raw_data", "11-Act. de Datos", "2-OOCC",
-        nombre_archivo
-    )
-    
-    # =========================================================
-    # 3. PLAYWRIGHT: NAVEGACIÓN Y EXTRACCIÓN
-    # =========================================================
-    with sync_playwright() as p:
-        # IMPORTANTE: headless=False para poder ver y usar el page.pause()
-        browser = p.chromium.launch(headless=False) 
-        context = browser.new_context(accept_downloads=True)
-        page = context.new_page()
-        
-        # --- LOGIN (Reutilizando utilería) ---
-        login_sae(page)
-
-        # --- NAVEGACIÓN ---
-        print("🧭 Navegando al Reporte de Atención al Cliente...")
+    if not btn_reporte.is_visible():
         page.get_by_role("link", name=re.compile(r"Reportes", re.IGNORECASE)).click()
         
-        # Ajusta el nombre exacto del menú si es distinto (ej. "Reporte De Atención", "Tickets", etc.)
-        btn_reporte = page.get_by_role("link", name=re.compile(r"Listado De LLamadas", re.IGNORECASE)).first
+    btn_reporte.wait_for(state="attached", timeout=5000)
+    btn_reporte.evaluate("node => node.click()")
+    page.wait_for_timeout(1000)
 
-        btn_reporte.wait_for(state="attached", timeout=5000)
-        btn_reporte.evaluate("node => node.click()")
-        
-        # --- LLENADO DE FILTROS ---
-        print(f"📅 Aplicando filtros de fecha: {fecha_inicial_str} - {fecha_final_str}")
-        
-        # FECHA DESDE: Usamos el método seguro de tipeo
-        try:
-            loc_desde = page.locator("#desde_llamada")
-            loc_desde.click()
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Backspace")
-            loc_desde.press_sequentially(fecha_inicial_str, delay=50)
-            
-            # FECHA HASTA
-            loc_hasta = page.locator("#hasta_llamada")
-            loc_hasta.click()
-            page.keyboard.press("Control+A")
-            page.keyboard.press("Backspace")
-            loc_hasta.press_sequentially(fecha_final_str, delay=50)
-        except Exception as e:
-            print(f"⚠️ Alerta llenando fechas, revisa los selectores: {e}")
-        #Click para evitar solapar la visibilidad del botón de buscar con los campos de fecha
-        print("🚀 Ejecutando búsqueda...")
-        page.keyboard.press("Escape")
-        page.locator("body").click(position={"x": 0, "y": 0})
-        page.wait_for_timeout(300) 
-        page.pause()
-        page.locator("#id_tll").select_option(label="GESTION OFICINA COMERCIAL")
-        page.wait_for_timeout(300) 
-        page.locator("#id_trl").select_option(label="ACTUALIZACIÓN")
-        btn_buscar = page.get_by_role("button", name=re.compile(r"Buscar", re.IGNORECASE)).first
-        btn_buscar.click()
-        
+    # --- LLENADO DE FILTROS ---
+    console.print("📅 Aplicando filtros (Actualización de Datos Personales)...")
+    asunto = page.locator("#motivo, select[name='motivo']").first 
+    asunto.wait_for(state="attached", timeout=10000)
+    asunto.evaluate("""node => {
+        const target = Array.from(node.options).find(opt => opt.text.toUpperCase().includes('ACTUALIZACION DE LOS DATOS PERSONALES'));
+        if (target) {
+            node.value = target.value;
+            node.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }""")
+    
+    llenar_fechas_sae(page, fecha_inicial_str, fecha_final_str, id_desde="#desde_obser", id_hasta="#hasta_obser")
 
-        print("⏳ Esperando resultados y configurando columnas...")
-        try:
-             # Pausa para revisar que los datos hayan cargado antes de configurar columnas
-            page.wait_for_timeout(500)
-            
-            page.get_by_role("button", name=re.compile(r"COLUMNAS", re.IGNORECASE)).click()
-            page.wait_for_timeout(500)
-            page.get_by_role("button", name=re.compile(r"Todos", re.IGNORECASE)).click()
-            page.wait_for_timeout(500)
-            page.get_by_title("Refrescar la tabla").click()
-            page.wait_for_timeout(500)
-            print("🔄 Refrescando la tabla...")
-            page.get_by_role("gridcell").first.wait_for(state="visible", timeout=60000) # Dejamos 3 segundos para asegurar que lleguen los datos
-           
-            print("🗂️ Seleccionando 'Todos' los registros de la tabla...")
-            # Implementando tu descubrimiento del combobox
-            page.get_by_role("combobox", name="Mostrar registros").select_option(label="Todos")
-            page.get_by_role("gridcell").first.wait_for(state="visible", timeout=60000)# Pausa breve para que se rendericen todas las filas
-            
-        except Exception as e:
-            print(f"⚠️ Aviso al configurar tabla: {e}")
-            page.pause() # Pausa para revisar que las columnas se hayan marcado correctamente
-        # ================== DESCARGA DIRECT A E INDEPENDIENTE ==================
-        print("📥 Interceptando y trasladando descarga a Excel...")
-        try:
-            if os.path.exists(ruta_destino):
-                os.remove(ruta_destino)
-        except Exception:
-            pass
+    page.keyboard.press("Escape")
+    page.locator("body").click(position={"x": 0, "y": 0})
+    page.wait_for_timeout(300)
+    btn_buscar = page.get_by_role("button", name=re.compile(r"Buscar", re.IGNORECASE)).first
+    btn_buscar.click()
+    
+    console.print("⏳ Esperando respuesta de la API del servidor...")
+    page.get_by_role("columnheader").nth(0).wait_for(state="visible", timeout=15000)
+    
+    console.print("🔄 Configurando columnas y refrescando la tabla...")
+    mostrar_todas_columnas(page)
+    
+    # --- CONFIGURACIÓN DE DESCARGA ---
+    f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
+    f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
+    nombre_archivo = f"Data - Actualizacion Gestion OBS {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
+    
+    ruta_destino_dir = os.path.join(str(PATHS.get("raw_act_datos")), "3-OBSERVACIONES")
+    os.makedirs(ruta_destino_dir, exist_ok=True)
+    ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
+    
+    ejecutar_descarga(page=page, ruta_destino=ruta_destino, seleccionar_todos=True)
 
-        with page.expect_download(timeout=120000) as download_info:
-            # Selector múltiple y robusto (Clase genérica de DataTables o ID SAE común)
-            try:
-                page.locator(".buttons-excel, button#exportar_xlsx").first.click(timeout=5000)
-            except Exception:
-                # Fallback al link vacío que habías descubierto originalmente
-                page.get_by_role("link").filter(has_text=re.compile(r"^$")).nth(1).click()
-                
-        download = download_info.value
-        os.makedirs(os.path.dirname(ruta_destino), exist_ok=True)
-        download.save_as(ruta_destino) # <-- Función nativa que traslada el archivo a la carpeta
-        print(f"✅ Archivo trasladado y guardado exitosamente en:\n   {ruta_destino}")
+@reportar_tiempo
+def descargar_act_datos(fecha_inicial_str: str, fecha_final_str: str):
+    """
+    Orquesta la descarga de todos los reportes referentes a Actualización de Datos.
+    """
+    console.print(f" [bold green]📊 Iniciando proceso de descarga de Act. de Datos ({fecha_inicial_str} - {fecha_final_str})...[/]")
+    
+    reportes_a_descargar = [
+        {
+            "tipo_llamada": "GESTION OFICINA COMERCIAL",
+            "tipo_respuesta": "ACTUALIZACIÓN",
+            "detalle_respuesta": None,
+            "nombre_archivo_base": "Data - Actualizacion Gestion OOCC",
+            "subcarpeta_destino": "2-OOCC"
+        },
+        {
+            "tipo_llamada": "GESTIÓN CALL CENTER",
+            "tipo_respuesta": "ACTUALIZACIÓN DE DATOS",
+            "detalle_respuesta": None,
+            "nombre_archivo_base": "Data - Actualizacion Gestion CC",
+            "subcarpeta_destino": "1-CALL CENTER"
+        },
+    ]
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context(accept_downloads=True)
+        page = context.new_page()
+
+        login_sae(page)
+
+        f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
+        f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
         
+        # 1. Bajar los del Listado de Llamadas
+        for config in reportes_a_descargar:
+            nombre_archivo = f"{config['nombre_archivo_base']} {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
+            ruta_destino_dir = os.path.join(str(PATHS.get("raw_act_datos")), config["subcarpeta_destino"])
+            os.makedirs(ruta_destino_dir, exist_ok=True)
+            ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
+            console.print(f" [bold blue]-- Iniciando descarga de: {config['nombre_archivo_base']}...[/]")
+            descargar_listado_llamadas(
+                page=page, fecha_inicial_str=fecha_inicial_str, fecha_final_str=fecha_final_str, 
+                ruta_destino=ruta_destino, tipo_llamada=config["tipo_llamada"], 
+                tipo_respuesta=config["tipo_respuesta"], detalle_respuesta=config["detalle_respuesta"]
+            )
+            page.wait_for_timeout(2000)
+
+        # 2. Bajar el de Reporte de Observaciones
+        descargar_observaciones(page, fecha_inicial_str, fecha_final_str)
+
+        console.print(" [bold green]✅ Proceso de descarga de Act. de Datos completado.[/]")
         browser.close()
 
 if __name__ == "__main__":
-    # Fechas de prueba
-    descargar_atc("24/03/2026", "25/03/2026")
+    # Fechas de prueba (mes anterior completo)
+    today = datetime.date.today()
+    first_day_of_current_month = today.replace(day=1)
+    last_day_of_previous_month = first_day_of_current_month - datetime.timedelta(days=1)
+    first_day_of_previous_month = last_day_of_previous_month.replace(day=1)
+    
+    fecha_ini_str = first_day_of_previous_month.strftime("%d/%m/%Y")
+    fecha_fin_str = last_day_of_previous_month.strftime("%d/%m/%Y")
+
+    descargar_act_datos(fecha_ini_str, fecha_fin_str)

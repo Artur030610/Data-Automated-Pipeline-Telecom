@@ -42,6 +42,14 @@ logger = logging.getLogger("FibexAudit")
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+# 4. Crear el objeto Logger para la Extracción (Scrapers)
+LOG_PATH_EXT = Path(__file__).parent / "logs" / "extraccion_logs.txt"
+handler_ext = RotatingFileHandler(LOG_PATH_EXT, maxBytes=1_000_000, backupCount=3, encoding='utf-8')
+handler_ext.setFormatter(formatter)
+logger_extraccion = logging.getLogger("FibexExtraccion")
+logger_extraccion.addHandler(handler_ext)
+logger_extraccion.setLevel(logging.INFO)
+
 # --- DECORADOR DE RENDIMIENTO ---
 def audit_performance(func):
     """
@@ -84,11 +92,25 @@ def reportar_tiempo(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        duration = end_time - start_time
-        console.print(f"[bold yellow]⏱️ Tiempo total bloque: {duration:.2f} segundos[/]\n")
-        return result
+                
+        # Detectar si es Extracción (Scraper) o Transformación (ETL)
+        is_scraper = 'scraper' in func.__module__ or 'descargar' in func.__name__
+        active_logger = logger_extraccion if is_scraper else logger
+        
+        active_logger.info(f"INICIO: [{func.__name__}]")
+        
+        try:
+            result = func(*args, **kwargs)
+            end_time = time.time()
+            duration = end_time - start_time
+            console.print(f"[bold yellow]⏱️ Tiempo total bloque: {duration:.2f} segundos[/]\n")
+            active_logger.info(f"EXITO: [{func.__name__}] | Duración: {duration:.2f}s")
+            return result
+        except Exception as e:
+            end_time = time.time()
+            duration = end_time - start_time
+            active_logger.error(f"FALLO CRITICO: [{func.__name__}] | Duración: {duration:.2f}s | Error: {str(e)}", exc_info=True)
+            raise e
     return wrapper
 
 @audit_performance
