@@ -98,6 +98,8 @@ def ejecutar():
         return
 
     df_total = pd.concat(dfs_para_anexar, ignore_index=True)
+    dfs_para_anexar.clear()
+    import gc; gc.collect()
     df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce")
 
     # ---------------------------------------------------------

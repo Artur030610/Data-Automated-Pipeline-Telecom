@@ -41,7 +41,8 @@ def ejecutar():
     # -------------------------------------------------------------------------
     console.print("[cyan]🚀 Fase 2: Construyendo Gold desde Bronze...[/]")
     try:
-        df_total = pd.read_parquet(RUTA_BRONZE)
+        # 🚀 OPTIMIZACIÓN RAM: Backend PyArrow 
+        df_total = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
     except Exception as e:
         console.print(f"[bold red]❌ Error leyendo Bronze: {e}[/]")
         return

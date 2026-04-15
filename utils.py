@@ -6,6 +6,7 @@ import warnings
 import time
 import datetime
 import re
+import shutil
 from functools import wraps
 from rich.console import Console
 from rich.progress import (
@@ -22,11 +23,23 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import polars as pl
+import pyarrow as pa
 
 console = Console(theme=THEME_COLOR)
 warnings.simplefilter(action='ignore')
 
-
+def liberar_ram_os():
+    """
+    Fuerza a Python y al Pool de Memoria de C++ (PyArrow) 
+    a devolver la RAM retenida al Sistema Operativo instantáneamente.
+    """
+    import gc
+    gc.collect()
+    try:
+        pa.default_memory_pool().release_unused()
+    except Exception:
+        pass
+    
 # --- CONFIGURACIÓN DEL MOTOR DE LOGS ---
 # 1. Definir ruta relativa al archivo actual
 LOG_PATH = Path(__file__).parent / "logs" / "fibex_pipeline_audit.log"
@@ -103,7 +116,8 @@ def reportar_tiempo(func):
             result = func(*args, **kwargs)
             end_time = time.time()
             duration = end_time - start_time
-            console.print(f"[bold yellow]⏱️ Tiempo total bloque: {duration:.2f} segundos[/]\n")
+            minutos, segundos = divmod(duration, 60)
+            console.print(f"[bold yellow]⏱️ Tiempo total bloque: {minutos:.0f} minutos y {segundos:.2f} segundos[/]\n")
             active_logger.info(f"EXITO: [{func.__name__}] | Duración: {duration:.2f}s")
             return result
         except Exception as e:
@@ -111,6 +125,8 @@ def reportar_tiempo(func):
             duration = end_time - start_time
             active_logger.error(f"FALLO CRITICO: [{func.__name__}] | Duración: {duration:.2f}s | Error: {str(e)}", exc_info=True)
             raise e
+        finally:
+            liberar_ram_os()
     return wrapper
 
 @audit_performance
@@ -158,6 +174,9 @@ def archivos_raw(ruta_raw, ruta_destino_parquet):
         # how="diagonal" une los archivos aunque uno tenga una columna extra que el otro no
         df_bronze = pl.concat(dfs, how="diagonal")
         
+        dfs.clear()
+        import gc; gc.collect()
+        
         # Asegurar que la ruta exista
         os.makedirs(os.path.dirname(ruta_destino_parquet), exist_ok=True)
         
@@ -170,6 +189,10 @@ def archivos_raw(ruta_raw, ruta_destino_parquet):
         # Usamos tu formato exacto de logs
         logger.info(f"DATA_QUALITY | BRONZE: {nombre_salida} | Guardadas: {filas:,}")
         console.print(f"[bold green]✅ ARCHIVO BRONZE GENERADO: {nombre_salida} ({filas:,} filas)[/]")
+        
+        del df_bronze
+        if 'df' in locals(): del df
+        liberar_ram_os()
         
         return True
         
@@ -254,6 +277,9 @@ def leer_carpeta(ruta_carpeta=None, filtro_exclusion=None, columnas_esperadas=No
                     # Reindex rellena con NaN lo que falte y descarta lo que sobre
                     df = df.reindex(columns=columnas_esperadas)
                 
+                # Optimización radical de memoria para todo el proyecto
+                df = df.convert_dtypes(dtype_backend="pyarrow")
+                
                 # Metadata indispensable
                 df["Source.Name"] = nombre 
                 df["fecha_mod_archivo"] = os.path.getmtime(archivo)
@@ -267,7 +293,10 @@ def leer_carpeta(ruta_carpeta=None, filtro_exclusion=None, columnas_esperadas=No
     if not lista_dfs:
         return pd.DataFrame()
         
-    return pd.concat(lista_dfs, ignore_index=True)
+    df_concat = pd.concat(lista_dfs, ignore_index=True)
+    lista_dfs.clear()
+    liberar_ram_os()
+    return df_concat
 
 def ingesta_inteligente(ruta_raw, ruta_gold, col_fecha_corte=None, **kwargs):
     """
@@ -566,13 +595,15 @@ def obtener_rango_fechas(nombre_archivo):
         print(f"Error parseando fechas en {nombre_archivo}: {e}")
         return None, None, None
 @audit_performance
+
 def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=None):
     """
     Ingesta Incremental (Upsert / Drop & Replace) usando Polars:
-    1. Lee los Excels nuevos en ruta_raw usando calamine y barra de progreso.
-    2. Extrae las fechas exactas que vienen DENTRO de los datos (Si aplica).
-    3. Va al Parquet Histórico (Bronze) y BORRA esas fechas (Estrategia Anti-Bloqueo Windows).
-    4. Une el histórico limpio con los datos nuevos y sobrescribe.
+    1. Lee los Excels nuevos en ruta_raw usando calamine.
+    2. Optimiza RAM: Escribe cada Excel como un Parquet temporal en disco y castea a Categorical.
+    3. Extrae las fechas exactas DENTRO de los datos.
+    4. Alinea el esquema del histórico (Bronze) con el nuevo para evitar choques de tipos.
+    5. Une el histórico limpio con los datos nuevos (Lazy Scan Diagonal) y sobrescribe.
     """
     ref_titulo = columna_fecha if columna_fecha else "Append / Unique"
     console.rule(f"[bold purple]⚡ INGESTA INCREMENTAL POLARS (Ref: {ref_titulo})[/]")
@@ -584,7 +615,15 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
         console.print("[yellow]⚠️ No hay archivos RAW nuevos para procesar en esta ruta.[/]")
         return False
 
-    dfs_nuevos = []
+    # --- DIRECTORIO TEMPORAL DINÁMICO ---
+    nombre_base_bronze = os.path.basename(ruta_bronze_historico).replace(".parquet", "")
+    temp_parts_path = os.path.join(ruta_raw, f"_temp_{nombre_base_bronze}")
+    
+    if os.path.exists(temp_parts_path): 
+        shutil.rmtree(temp_parts_path)
+    os.makedirs(temp_parts_path, exist_ok=True)
+    
+    hubo_archivos_procesados = False
     
     with Progress(
         SpinnerColumn(),
@@ -598,14 +637,21 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
         
         task = progress.add_task("", total=len(archivos_validos))
         
-        for archivo in archivos_validos:
+        for i, archivo in enumerate(archivos_validos):
             nombre = os.path.basename(archivo)
-            progress.update(task, description=f"📄 Leyendo {nombre}")
+            progress.update(task, description=f"📄 Procesando a Disco: {nombre}")
             
             try:
+                # 1. Lectura inicial
                 df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0)
                 
-                # --- TRACTOR DE FECHAS: Convierte la data nueva a Date nativo ---
+                # 2. Optimización de RAM: Casteo a Categorical
+                cols_pesadas = ["Usuario", "Oficina Cobro", "Forma de Pago", "Estatus", "Banco"]
+                cast_dict = [pl.col(c).cast(pl.Categorical) for c in cols_pesadas if c in df.columns]
+                if cast_dict:
+                    df = df.with_columns(cast_dict)
+                
+                # 3. TRACTOR DE FECHAS
                 if columna_fecha and columna_fecha in df.columns:
                     df = df.with_columns(
                         pl.coalesce([
@@ -617,19 +663,21 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
                         ]).alias(columna_fecha)
                     )
                 
-                # =========================================================
-                # 🚨 NUEVO: CAPTURA DE METADATA PARA CDC (Change Data Capture)
-                # =========================================================
-                mtime_ts = os.path.getmtime(archivo) # Captura el timestamp de Windows
-                fecha_modificacion = datetime.datetime.fromtimestamp(mtime_ts) # Lo convierte a Datetime real
+                # 4. CAPTURA DE METADATA PARA CDC
+                mtime_ts = os.path.getmtime(archivo)
+                fecha_modificacion = datetime.datetime.fromtimestamp(mtime_ts)
                 
                 df = df.with_columns([
                     pl.lit(nombre).alias("Source.Name"),
                     pl.lit(fecha_modificacion).alias("Fecha_Modificacion_Archivo")
                 ])
-                # =========================================================
 
-                dfs_nuevos.append(df)
+                # 5. DESCARGA A DISCO Y LIBERACIÓN DE RAM
+                path_part = os.path.join(temp_parts_path, f"part_{i}.parquet")
+                df.write_parquet(path_part)
+                
+                del df  # Elimina el dataframe de la memoria inmediatamente
+                hubo_archivos_procesados = True
                 
             except Exception as e:
                 logger.error(f"Error leyendo {nombre}: {e}")
@@ -637,14 +685,22 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
             
             progress.advance(task)
             
-    if not dfs_nuevos:
+    if not hubo_archivos_procesados:
+        shutil.rmtree(temp_parts_path)
         return False
         
-    df_nuevo_completo = pl.concat(dfs_nuevos, how="diagonal")
+    # --- UNIFICACIÓN LAZY Y DIAGONAL (Parche para columnas extra/faltantes) ---
+    console.print("[cyan]🚀 Unificando partes temporales con Scan Lazy...[/]")
+    archivos_temporales = glob.glob(os.path.join(temp_parts_path, "*.parquet"))
+    lf_temporales = [pl.scan_parquet(f) for f in archivos_temporales]
+    df_nuevo_completo = pl.concat(lf_temporales, how="diagonal").collect()
+    
+    # Limpiamos el disco temporal y forzamos al OS a soltar RAM
+    shutil.rmtree(temp_parts_path)
+    liberar_ram_os()
     
     fechas_nuevas = []
     if columna_fecha and columna_fecha in df_nuevo_completo.columns:
-        # Extraemos las fechas manteniendo su tipo Date nativo
         fechas_nuevas = df_nuevo_completo.drop_nulls(subset=[columna_fecha])[columna_fecha].unique().to_list()
         console.print(f"[green]📅 Fechas detectadas para actualizar: {len(fechas_nuevas)} días únicos.[/]")
     else:
@@ -654,35 +710,50 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
         console.print(f"[cyan]🔄 Cruzando con histórico: {os.path.basename(ruta_bronze_historico)}...[/]")
         
         try:
-            # 1. Usamos LazyFrames para NO subir 5M de registros a RAM
             lf_historico = pl.scan_parquet(ruta_bronze_historico)
             lf_nuevo = df_nuevo_completo.lazy()
             
+            # --- ALINEACIÓN DE ESQUEMAS: HISTÓRICO -> CATEGORICAL ---
+            schema_nuevo = dict(lf_nuevo.collect_schema())
+            schema_hist = dict(lf_historico.collect_schema())
+            
+            cast_exprs = []
+            for col, dtype in schema_nuevo.items():
+                if col in schema_hist and dtype == pl.Categorical and schema_hist[col] != pl.Categorical:
+                    cast_exprs.append(pl.col(col).cast(pl.Categorical))
+            
+            if cast_exprs:
+                lf_historico = lf_historico.with_columns(cast_exprs)
+            
+            # --------------------------------------------------------
+            
             if columna_fecha and fechas_nuevas:
-                # =========================================================
-                # NIVELADOR ESTRICTO A FECHA (DATE PUREZA 100%)
-                # =========================================================
                 tipo_columna = lf_historico.collect_schema().get(columna_fecha)
                 
                 if tipo_columna in [pl.Utf8, pl.String]:
-                    # Si Pandas lo guardó como texto, cortamos los primeros 10 caracteres (YYYY-MM-DD) y parseamos
                     lf_historico = lf_historico.with_columns(
-                        pl.col(columna_fecha).str.slice(0, 10).str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias(columna_fecha)
+                        pl.coalesce([
+                            pl.col(columna_fecha).str.strptime(pl.Date, "%Y-%m-%d %H:%M:%S", strict=False),
+                            pl.col(columna_fecha).str.strptime(pl.Date, "%Y-%m-%d", strict=False),
+                            pl.col(columna_fecha).str.strptime(pl.Date, "%d/%m/%Y %H:%M:%S", strict=False),
+                            pl.col(columna_fecha).str.strptime(pl.Date, "%d/%m/%Y", strict=False),
+                            pl.col(columna_fecha).str.strptime(pl.Date, "%d-%m-%Y", strict=False)
+                        ]).alias(columna_fecha)
                     )
                 else:
-                    # Si ya es datetime o numérico, lo casteamos directo
                     lf_historico = lf_historico.with_columns(
                         pl.col(columna_fecha).cast(pl.Date, strict=False).alias(columna_fecha)
                     )
                 
-                # Ahora sí, el cruce es Date vs Date
                 lf_historico_limpio = lf_historico.filter(
-                    ~pl.col(columna_fecha).is_in(fechas_nuevas)
+                    ~pl.col(columna_fecha).is_in(fechas_nuevas).fill_null(False)
                 )
                 df_final = pl.concat([lf_historico_limpio, lf_nuevo], how="diagonal").collect()
             else:
-                # Unimos y recolectamos al final de forma eficiente
                 df_final = pl.concat([lf_historico, lf_nuevo], how="diagonal").unique().collect()
+            
+            # 🚀 BLINDAJE ANTI-UINT32: Convertimos Categorical a String ANTES de guardar
+            df_final = df_final.with_columns(pl.col(pl.Categorical).cast(pl.String))
             
             ruta_temp = ruta_bronze_historico + ".tmp"
             df_final.write_parquet(ruta_temp, compression="snappy")
@@ -690,19 +761,29 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
             if os.path.exists(ruta_bronze_historico):
                 os.remove(ruta_bronze_historico)
             os.rename(ruta_temp, ruta_bronze_historico)
+            
+            if 'lf_historico' in locals(): del lf_historico
+            if 'lf_nuevo' in locals(): del lf_nuevo
 
         except Exception as e:
             logger.error(f"Error en cruce histórico: {e}")
             console.print(f"[yellow]⚠️ Reintentando con carga Full por error de acceso... {e}[/]")
             df_final = df_nuevo_completo
+            df_final = df_final.with_columns(pl.col(pl.Categorical).cast(pl.String))
             df_final.write_parquet(ruta_bronze_historico, compression="snappy")
     else:
         df_final = df_nuevo_completo
         os.makedirs(os.path.dirname(ruta_bronze_historico), exist_ok=True)
+        # 🚀 BLINDAJE ANTI-UINT32 (También para la carga inicial)
+        df_final = df_final.with_columns(pl.col(pl.Categorical).cast(pl.String))
         df_final.write_parquet(ruta_bronze_historico, compression="snappy")
         
     filas = df_final.height
     logger.info(f"DATA_QUALITY | BRONZE INCREMENTAL | Guardadas: {filas:,}")
     console.print(f"[bold green]✅ ARCHIVO BRONZE ACTUALIZADO: {os.path.basename(ruta_bronze_historico)} ({filas:,} filas)[/]")
+    
+    del df_final
+    if 'df_nuevo_completo' in locals(): del df_nuevo_completo
+    liberar_ram_os()
     
     return True

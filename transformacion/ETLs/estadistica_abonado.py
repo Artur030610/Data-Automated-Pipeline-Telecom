@@ -1,5 +1,6 @@
 import duckdb
 import pandas as pd
+import polars as pl
 import os
 import sys
 import glob
@@ -93,10 +94,10 @@ def ejecutar():
             
             # A. Leemos Excel con Pandas (usando engine='calamine' si está disponible, es más rápido)
             try:
-                df_temp = pd.read_excel(archivo, engine="calamine")
-            except ImportError:
+                df_temp = pl.read_excel(archivo, engine="calamine", infer_schema_length=0).to_pandas(use_pyarrow_extension_array=True)
+            except Exception:
                 # Fallback a openpyxl si calamine no está instalado
-                df_temp = pd.read_excel(archivo, engine="openpyxl")
+                df_temp = pd.read_excel(archivo, engine="openpyxl").convert_dtypes(dtype_backend="pyarrow")
             
             # B. Limpieza básica de columnas para SQL
             df_temp.columns = df_temp.columns.astype(str).str.strip().str.upper()

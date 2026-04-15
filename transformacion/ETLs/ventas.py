@@ -73,7 +73,7 @@ def ejecutar():
         return
         
     console.print("[cyan]📥 Leyendo histórico completo desde capa Bronze...[/]")
-    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+    df_nuevo = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
 
     if df_nuevo.empty:
         console.print("[bold green]✅ No hay datos en Bronze para procesar.[/]")

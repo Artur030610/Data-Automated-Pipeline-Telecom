@@ -39,7 +39,8 @@ def ejecutar():
         return
         
     utils.console.print("[cyan]📥 Leyendo histórico completo desde capa Bronze...[/]")
-    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+    # 🚀 OPTIMIZACIÓN RAM: Backend PyArrow
+    df_nuevo = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
 
     if df_nuevo.empty:
         utils.console.print("[bold green]✅ No hay datos en Bronze para procesar.[/]")

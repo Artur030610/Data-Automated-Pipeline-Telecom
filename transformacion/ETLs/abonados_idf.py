@@ -6,7 +6,8 @@ import glob
 import re
 import datetime
 import calendar
-import gc
+import polars as pl
+import duckdb
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 # --- CONFIGURACIÓN DE RUTAS ---
@@ -118,7 +119,7 @@ def ejecutar():
             df_hist_meta = pd.read_parquet(ruta_silver_completa, columns=["Quincena Evaluada"])
             quincenas_existentes = set(df_hist_meta["Quincena Evaluada"].unique())
             del df_hist_meta
-            gc.collect()
+            
             console.print(f"[green]✅ Memoria Silver cargada. {len(quincenas_existentes)} quincenas registradas.[/]")
         except Exception as e:
             console.print(f"[yellow]⚠️ Error leyendo memoria: {e}. Se hará lectura completa.[/]")
@@ -164,7 +165,7 @@ def ejecutar():
                 if es_ultimo_archivo:
                     progress.console.print(f"[magenta]  🔄 Refrescando quincena actual -> {quincena_nombre}[/]")
                 
-                df = pd.read_excel(archivo, engine="calamine")
+                df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0).to_pandas(use_pyarrow_extension_array=True)
                 if df.empty: 
                     progress.advance(task)
                     continue
@@ -195,7 +196,7 @@ def ejecutar():
                 progress.console.print(f"[red]❌ Error en {nombre_archivo}: {e}[/]")
             finally:
                 if 'df' in locals(): del df
-                gc.collect()
+                
             
             progress.advance(task)
 
@@ -206,26 +207,58 @@ def ejecutar():
 
     console.print(f"\n[cyan]🔄 Fase 2: Uniendo con historial Silver (Upsert)...[/]")
     df_nuevo_lote = pd.concat(dataframes_list, ignore_index=True).drop_duplicates()
+    dataframes_list.clear()
+    
+    # Limpiamos los nulos del lote nuevo antes de inyectarlo
+    df_nuevo_lote = limpiar_nulos_powerbi(df_nuevo_lote)
     
     if os.path.exists(ruta_silver_completa):
-        df_hist_full = pd.read_parquet(ruta_silver_completa)
-        # Borramos lo que acabamos de refrescar
-        df_hist_limpio = df_hist_full[~df_hist_full["Quincena Evaluada"].isin(quincenas_procesadas_hoy)]
-        df_silver_final = pd.concat([df_hist_limpio, df_nuevo_lote], ignore_index=True)
+        console.print("[cyan]🦆 Ejecutando Upsert Out-Of-Core con DuckDB (Cero RAM)...[/]")
+        con = duckdb.connect(database=':memory:')
+        con.execute("PRAGMA memory_limit='2GB'")
+        con.register('df_nuevo_lote', df_nuevo_lote)
+        
+        quincenas_str = ", ".join([f"'{q}'" for q in quincenas_procesadas_hoy])
+        ruta_temp = ruta_silver_completa + ".tmp"
+        
+        # Hacemos el cruce escribiendo directamente al disco duro
+        query = f"""
+        COPY (
+            SELECT * FROM read_parquet('{ruta_silver_completa.replace(chr(92), '/')}')
+            WHERE "Quincena Evaluada" NOT IN ({quincenas_str})
+            UNION ALL BY NAME
+            SELECT * FROM df_nuevo_lote
+        ) TO '{ruta_temp.replace(chr(92), '/')}' (FORMAT PARQUET, COMPRESSION 'SNAPPY')
+        """
+        con.execute(query)
+        
+        # 4. GUARDADO GOLD OUT-OF-CORE
+        ruta_gold = PATHS.get("gold", "data/gold")
+        ruta_gold_completa = os.path.join(ruta_gold, "Stock_Abonados_Gold_Resumen.parquet")
+        query_gold = f"""
+        COPY (
+            SELECT "Quincena Evaluada", Franquicia, 
+                   COUNT(DISTINCT ID) as Total_Abonados, 
+                   MAX(FechaFin) as Fecha_Corte
+            FROM read_parquet('{ruta_temp.replace(chr(92), '/')}')
+            GROUP BY "Quincena Evaluada", Franquicia
+        ) TO '{ruta_gold_completa.replace(chr(92), '/')}' (FORMAT PARQUET, COMPRESSION 'SNAPPY')
+        """
+        con.execute(query_gold)
+        con.close()
+        
+        # Reemplazamos el silver viejo por el nuevo consolidado
+        if os.path.exists(ruta_silver_completa):
+            os.remove(ruta_silver_completa)
+        os.rename(ruta_temp, ruta_silver_completa)
+        
+        del df_nuevo_lote
+        
     else:
         df_silver_final = df_nuevo_lote
-
-    df_silver_final = limpiar_nulos_powerbi(df_silver_final)
-    
-    # 4. GUARDADO
-    ruta_gold = PATHS.get("gold", "data/gold")
-    guardar_parquet(df_silver_final, "Stock_Abonados_Silver_Detalle.parquet", filas_iniciales=len(df_silver_final), ruta_destino=ruta_silver)
-
-    df_gold = df_silver_final.groupby(["Quincena Evaluada", "Franquicia"], as_index=False).agg(
-        Total_Abonados=("ID", "nunique"),
-        Fecha_Corte=("FechaFin", "max")
-    )
-    guardar_parquet(df_gold, "Stock_Abonados_Gold_Resumen.parquet", filas_iniciales=len(df_gold), ruta_destino=ruta_gold)
+        guardar_parquet(df_silver_final, "Stock_Abonados_Silver_Detalle.parquet", filas_iniciales=len(df_silver_final), ruta_destino=ruta_silver)
+        df_gold = df_silver_final.groupby(["Quincena Evaluada", "Franquicia"], as_index=False).agg(Total_Abonados=("ID", "nunique"), Fecha_Corte=("FechaFin", "max"))
+        guardar_parquet(df_gold, "Stock_Abonados_Gold_Resumen.parquet", filas_iniciales=len(df_gold), ruta_destino=PATHS.get("gold", "data/gold"))
     
     console.print(f"[bold green]✨ Proceso Finalizado. (Sincronizado Cronológicamente)[/]")
 

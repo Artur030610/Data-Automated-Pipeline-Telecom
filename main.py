@@ -5,7 +5,7 @@ from rich.table import Table
 from rich.prompt import Prompt
 from config import THEME_COLOR
 import time 
-from utils import tiempo, audit_performance 
+from utils import tiempo, audit_performance, liberar_ram_os
 
 # ========================================================
 # 1. IMPORTACIÓN DE MÓDULOS (ETLs)
@@ -91,6 +91,7 @@ def ejecutar_wrapper(modulo):
         else:
             if hasattr(modulo, 'ejecutar'):
                 modulo.ejecutar()
+                liberar_ram_os()
             else:
                 console.print(f"[red]❌ El módulo {modulo} no tiene función ejecutar()[/]")
     except Exception as e:

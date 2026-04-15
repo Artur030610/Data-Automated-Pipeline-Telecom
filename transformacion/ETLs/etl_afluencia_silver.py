@@ -4,6 +4,7 @@ import re
 import os
 import sys
 from unidecode import unidecode
+import gc
 
 # --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -94,7 +95,8 @@ def ejecutar():
     for origen, ruta in files.items():
         if os.path.exists(ruta):
             try:
-                df_source = pd.read_parquet(ruta)
+                # 🚀 OPTIMIZACIÓN RAM: PyArrow reduce el peso de 1.8M de filas en un ~70%
+                df_source = pd.read_parquet(ruta, dtype_backend="pyarrow")
                 for col in cols_necesarias:
                     if col not in df_source.columns: df_source[col] = None
                 
@@ -109,6 +111,11 @@ def ejecutar():
         return ruta_silver_destino
 
     df_total = pd.concat(dfs_all, ignore_index=True)
+    
+    # 🚀 OPTIMIZACIÓN RAM: Vaciamos la lista origen y forzamos al Garbage Collector
+    dfs_all.clear()
+    gc.collect()
+    
     df_total["Fecha"] = pd.to_datetime(df_total["Fecha"], dayfirst=True, errors="coerce")
     df_total["Mes"] = df_total["Fecha"].dt.month.map(MAPA_MESES).str.lower()
     
@@ -152,10 +159,10 @@ def ejecutar():
     df_total.drop(columns=['Vendedor_Clean'], inplace=True)
 
     # --- PASO 3: DEDUPLICACIÓN Y GUARDADO ---
-    df_final = df_total.copy()
+    # 🚀 OPTIMIZACIÓN RAM: Eliminamos el .copy() que duplicaba 1.8M filas en RAM
 
-    guardar_parquet(df_final, nombre_archivo_silver, filas_iniciales=len(df_final), ruta_destino=PATHS["silver"])
-    console.print(f"[bold green]✨ Silver Consolidado generado: {len(df_final):,} registros únicos.[/]")
+    guardar_parquet(df_total, nombre_archivo_silver, filas_iniciales=len(df_total), ruta_destino=PATHS["silver"])
+    console.print(f"[bold green]✨ Silver Consolidado generado: {len(df_total):,} registros únicos.[/]")
     
     return ruta_silver_destino
 

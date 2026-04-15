@@ -1,10 +1,8 @@
-import pandas as pd
-import numpy as np
 import os
 import sys
-import glob 
 import polars as pl
 import duckdb
+import gc
 import gc
 
 from utils import  reportar_tiempo, console
@@ -59,6 +57,9 @@ def ejecutar():
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze de Recaudación no se actualizó. Error: {e}[/]")
 
+    # 🚀 OPTIMIZACIÓN RAM: Forzamos a vaciar los GBs del primer archivo antes de leer el segundo
+    gc.collect()
+
     try:
         console.print("[dim]Actualizando Bronze de Horas...[/dim]")
         ingesta_incremental_polars(
@@ -68,6 +69,9 @@ def ejecutar():
         )
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze de Horas no se actualizó. Error: {e}[/]")
+
+    # 🚀 OPTIMIZACIÓN RAM: Vaciamos los GBs del segundo archivo antes de encender DuckDB
+    gc.collect()
 
     # =========================================================
     # --- PASO 2, 3 Y 4: PROCESAMIENTO LAZY Y MERGE CON DUCKDB ---
@@ -217,6 +221,11 @@ def ejecutar():
         console.print("[cyan]⏳ Ejecutando proceso SQL Out-Of-Core directo a Disco...[/]")
         con.execute(query)
         con.close()
+        del con
+        
+        # 🚀 OPTIMIZACIÓN RAM: Forzamos al sistema a liberar instantáneamente 
+        # los 2GB que DuckDB tenía reservados para el cruce.
+        gc.collect()
         
         console.print(f"[bold green]✅ Archivo {NOMBRE_GOLD} generado y exportado exitosamente (RAM casi Cero).[/]")
         

@@ -72,18 +72,19 @@ def ejecutar():
     # ---------------------------------------------------------
     # 1. LECTURA TOTAL ORDENADA (Protección de Integridad)
     # ---------------------------------------------------------
-    # sorted() obliga a que los Excels se lean en orden cronológico/alfabético
-    archivos_todos = sorted(glob.glob(os.path.join(RUTA_RAW, "*.xlsx")))
-    archivos_a_leer = [arch for arch in archivos_todos if "Consolidado" not in arch and "~$" not in arch]
-
-    if not archivos_a_leer:
-        console.print("[bold green]✅ No hay archivos para procesar en la carpeta.[/]")
+    # 🚀 OPTIMIZACIÓN RAM: Leemos directamente el Parquet que Polars acaba de generar
+    if not os.path.exists(RUTA_BRONZE):
+        console.print("[bold red]❌ No se encontró la capa Bronze. Imposible continuar.[/]")
         return
 
-    console.print(f"[cyan]🚀 Procesando {len(archivos_a_leer)} archivos desde cero para reconstruir historia...[/]")
-    df_nuevo = leer_carpeta(archivos_especificos=archivos_a_leer)
+    console.print("[cyan]🚀 Leyendo histórico completo desde capa Bronze (Parquet)...[/]")
+    df_nuevo = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
     
     if df_nuevo.empty: return
+
+    # Excluimos los archivos Consolidados usando la metadata inyectada por Polars
+    if 'Source.Name' in df_nuevo.columns:
+        df_nuevo = df_nuevo[~df_nuevo['Source.Name'].str.contains("Consolidado", na=False, case=False)]
 
     # ---------------------------------------------------------
     # 2. TRANSFORMACIONES Y LIMPIEZA

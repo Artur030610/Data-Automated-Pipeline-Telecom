@@ -51,7 +51,7 @@ def procesar_reclamos_general():
         console.print("[bold green]✅ Reclamos Generales: Sistema actualizado (sin datos).[/]")
         return
         
-    df_nuevo_total = pd.read_parquet(RUTA_BRONZE)
+    df_nuevo_total = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
 
     if df_nuevo_total.empty:
         console.print("[bold green]✅ Reclamos Generales: Sistema actualizado.[/]")
@@ -134,7 +134,7 @@ def procesar_fallas_app():
         console.print("[bold green]✅ Fallas App: Sistema actualizado (sin datos).[/]")
         return
         
-    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+    df_nuevo = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
 
     if df_nuevo.empty:
         console.print("[bold green]✅ Fallas App: Sistema actualizado.[/]")
@@ -203,7 +203,7 @@ def procesar_fallas_banco():
         console.print("[bold green]✅ Fallas Banco: Sistema actualizado (sin datos).[/]")
         return
         
-    df_nuevo = pd.read_parquet(RUTA_BRONZE)
+    df_nuevo = pd.read_parquet(RUTA_BRONZE, dtype_backend="pyarrow")
 
     if df_nuevo.empty:
         console.print("[bold green]✅ Fallas Banco: Sistema actualizado.[/]")

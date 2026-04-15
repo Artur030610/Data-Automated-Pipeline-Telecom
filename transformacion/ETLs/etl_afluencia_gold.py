@@ -29,7 +29,7 @@ def ejecutar(ruta_silver=None):
     # 2. LECTURA ATÓMICA
     # -------------------------------------------------------------------------
     try:
-        df_silver = pd.read_parquet(ruta_silver)
+        df_silver = pd.read_parquet(ruta_silver, dtype_backend="pyarrow")
         console.print(f"[cyan]🚀 Iniciando normalización completa ({len(df_silver)} registros)...[/]")
     except Exception as e:
         console.print(f"[red]❌ Error leyendo archivo Silver: {e}[/]")

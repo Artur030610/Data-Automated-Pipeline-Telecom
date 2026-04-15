@@ -5,6 +5,7 @@ import os
 import glob
 import re
 import datetime
+import polars as pl
 
 # ==========================================
 # 🔼 EL TRUCO DEL ASCENSOR 🔼
@@ -133,7 +134,10 @@ def ejecutar():
         if not fecha_inicio: continue
 
         try:
-            df = pd.read_excel(archivo, engine="calamine")
+            # 🚀 OPTIMIZACIÓN RAM: Polars lee el Excel en C++ (mucho más ligero)
+            # y lo convierte a Pandas usando PyArrow. Esto evita el pico de RAM de pd.read_excel.
+            df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0).to_pandas(use_pyarrow_extension_array=True)
+            
             if df.empty: continue
 
             # --- LIMPIEZA FECHAS ---
@@ -188,6 +192,7 @@ def ejecutar():
     # ==========================================
     if dataframes_procesados:
         df_total = pd.concat(dataframes_procesados, ignore_index=True)
+        dataframes_procesados.clear()
 
         # EL FIX: Borramos columnas basura que causan el ValueError
         df_total = df_total.drop(columns=["Fecha Apertura", "Fecha Cierre"], errors="ignore")

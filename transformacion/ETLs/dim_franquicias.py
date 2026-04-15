@@ -13,7 +13,7 @@ def generar_dim_franquicias():
     # 1. Leer Abonados
     try:
         path_abo = os.path.join(ruta_gold, "Stock_Abonados_Gold_Resumen.parquet")
-        df_abo = pd.read_parquet(path_abo)
+        df_abo = pd.read_parquet(path_abo, dtype_backend="pyarrow")
         lista_abo = df_abo["Franquicia"].unique().tolist()
         console.print(f"   ✅ Abonados: {len(lista_abo)} franquicias.")
     except Exception:
@@ -24,7 +24,7 @@ def generar_dim_franquicias():
     try:
         # El script maestro ahora genera "IDF_Gold.parquet", no el nombre largo anterior
         path_idf = os.path.join(ruta_gold, "IDF_Gold.parquet")
-        df_idf = pd.read_parquet(path_idf)
+        df_idf = pd.read_parquet(path_idf, dtype_backend="pyarrow")
         lista_idf = df_idf["Franquicia"].unique().tolist()
         console.print(f"   ✅ IDF: {len(lista_idf)} franquicias.")
     except Exception:
