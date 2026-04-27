@@ -1,6 +1,7 @@
 import os
 import sys
-import datetime
+import datetime 
+from datetime import timedelta
 import time
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -29,13 +30,17 @@ import scraper_reclamos
 import scraper_ordenes_servicio
 import scraper_comebackhome
 import scraper_empleados
+import scraper_estadisticas_abonados
+import scraper_churn_risk
+import scraper_abonados
+import scraper_ont_off
 
 def pedir_fechas(auto_mode=False):
     console.print("\n[bold cyan]📅 Configuración de Fechas para la Extracción[/]")
     
     # Sugerir fechas por defecto (Día 1 del mes actual hasta hoy)
     hoy = datetime.datetime.today()
-    primer_dia = hoy.replace(day=1).strftime("%d/%m/%Y")
+    primer_dia = (hoy - timedelta(days=7)).strftime("%d/%m/%Y")
     hoy_str = hoy.strftime("%d/%m/%Y")
     
     if auto_mode:
@@ -72,7 +77,10 @@ MENU = {
         scraper_cobranza.descargar_cobranza,
         scraper_act_datos.descargar_act_datos,
         scraper_reclamos.descargar_reclamos,
+        scraper_estadisticas_abonados.descargar_estadisticas_abonados,
+        #scraper_churn_risk.descargar_churn_risk,
         #scraper_ordenes_servicio.descargar_ordenes_servicio,
+        scraper_ont_off.descargar_ont_off
     ]},
     "2":  {"icono": "💰", "label": "RECAUDACIÓN Y HORAS DE PAGO", "target": scraper_recaudacion.descargar_recaudacion_y_horas},
     "2":  {"icono": "💰", "label": "RECAUDACIÓN Y HORAS DE PAGO", "target": [
@@ -87,6 +95,10 @@ MENU = {
     "9":  {"icono": "📑", "label": "ÓRDENES DE SERVICIO (TICKETS IDF/SLA)", "target": scraper_ordenes_servicio.descargar_ordenes_servicio},
     "10": {"icono": "🏠", "label": "COMEBACKHOME", "target": scraper_comebackhome.descargar_comebackhome},
     "11": {"icono": "👤", "label": "EMPLEADOS (PLANTILLA ACTUAL)", "target": scraper_empleados.descargar_empleados},
+    "12": {"icono": "🎧", "label": "ESTADÍSTICA DE ABONADOS", "target": scraper_estadisticas_abonados.descargar_estadisticas_abonados},
+    "13": {"icono": "📈", "label": "CHURN RISK", "target": scraper_churn_risk.descargar_churn_risk},
+    "14": {"icono": "📜", "label": "ONTs APAGADAS", "target": scraper_ont_off.descargar_ont_off},
+    
 }
 
 def mostrar_menu():

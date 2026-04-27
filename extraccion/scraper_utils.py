@@ -111,7 +111,7 @@ def mostrar_todas_columnas(page: Page):
     except Exception as e:
         print(f"⚠️ Aviso: No se pudieron configurar las columnas ({e})")
 
-def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 300000, seleccionar_todos: bool = False, locator_descarga: Union[str, Locator] = None, **kwargs):
+def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 300000, seleccionar_todos: bool = False, locator_descarga: Union[str, Locator] = None, **kwargs): #type: ignore
     """
     Ejecuta la descarga a Excel
     usando selectores robustos sin depender de IDs específicos de tablas.
@@ -138,6 +138,7 @@ def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 300000, s
 
     # TRUCO DE ESTABILIDAD: Identificamos el botón ANTES del expect_download.
     # Anidar try-except dentro corrompe el event loop si ocurre un Timeout.
+    ' Si el caller especifica un locator personalizado, lo usamos. Sino, intentamos detectar el botón de descarga de forma inteligente.'
     if locator_descarga:
         elemento_clic = page.locator(locator_descarga) if isinstance(locator_descarga, str) else locator_descarga
     else:
@@ -155,6 +156,7 @@ def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 300000, s
     download.save_as(ruta_destino) # <-- Función nativa que traslada el archivo a la carpeta
     logger_extraccion.info(f"Descarga exitosa: {os.path.basename(ruta_destino)}")
     print(f"✅ Archivo trasladado y guardado exitosamente en:\n   {ruta_destino}")
+    return ruta_destino, download
 
 def descargar_listado_llamadas(page: Page, fecha_inicial_str: str, fecha_final_str: str, ruta_destino: str, tipo_llamada = None, tipo_respuesta = None, detalle_respuesta = None):
     """
@@ -198,3 +200,86 @@ def descargar_listado_llamadas(page: Page, fecha_inicial_str: str, fecha_final_s
     mostrar_todas_columnas(page)
     
     ejecutar_descarga(page=page, ruta_destino=ruta_destino, seleccionar_todos=True)
+
+def listado_abonados(page: Page, fecha_inicial_str: str, fecha_final_str: str, motivo_str: str = None, estatus_list: list = None   ,col_table : list = None): #type: ignore
+    """
+    Función especializada para descargar el reporte de Listado de Abonados.
+    """
+    print("Navegando al Listado de Abonados...")
+    page.get_by_role("link", name=re.compile(r"Reportes", re.IGNORECASE)).click()
+        
+    btn_listado = page.get_by_role("link", name=re.compile("Listado De Abonados", re.IGNORECASE))
+    btn_listado.wait_for(state="visible", timeout=5000)
+    btn_listado.click()
+    
+    #Validamos que solo recorra los estatus si se incluye la lista como argumento. 
+    if estatus_list:
+        print("☑️ Configurando Estatus de Contratos...")
+        for estatus in estatus_list:
+            # Evitamos que falle si ya estaba marcado o si demora un poco
+            checkbox = page.locator(f"input[id='{estatus}']")
+            checkbox.wait_for(state="attached", timeout=5000)
+            if not checkbox.is_checked():
+                checkbox.check()
+    print("☑️ Configurando Estatus de Contratos...")
+        
+    # Aplicacion de los filtros de fecha
+    print(f"📅 Aplicando filtros de fecha: {fecha_inicial_str} - {fecha_final_str}")
+    print("👉 Cambiando a la pestaña de Fechas...")
+    page.get_by_role("tab", name=re.compile(r"Fecha", re.IGNORECASE)).click()
+    page.wait_for_timeout(500)
+    
+    # Función especializada para llenar las fechas que elude los errores de máscara del SAE
+    llenar_fechas_sae(page, fecha_inicial_str, fecha_final_str, id_desde="input#desde_fecha", id_hasta="input#hasta_fecha")
+        
+    print(f"📋 Seleccionando Motivo ({motivo_str})...")
+    # Busca la opción que contenga el texto (ignorando mayúsculas/minúsculas) y la selecciona
+    if motivo_str:
+        page.locator("#motivo").click()
+        page.wait_for_selector("#motivo", state="visible", timeout=60000)
+        page.locator("#motivo").select_option(motivo_str) # type: ignore
+    else:
+        #page.locator("#motivo").click() # Abrimos el dropdown
+        page.locator("#motivo").select_option("instalacion") # type: ignore
+    
+    # Si la página requiere que se dispare el evento 'change' explícitamente después de seleccionar:
+    page.locator("#motivo").dispatch_event("change")
+    print("🚀 Ejecutando búsqueda inicial...")
+    
+    btn_buscar = page.get_by_role("button", name=re.compile(r"Buscar", re.IGNORECASE)).first
+    btn_buscar.wait_for(state="visible", timeout=5000)
+    btn_buscar.evaluate("node => node.click()")
+        
+        # ================== SELECCIÓN DE COLUMNAS ESPECÍFICAS ==================
+    print("⏳ Esperando a que el servidor devuelva los resultados...")
+    try:
+            page.wait_for_selector("button#exportar_xlsx", state="visible", timeout=60000)
+            print("⚙️ Configurando columnas específicas (limpiando y marcando)...")
+            
+            boton_columnas = page.locator("div#boton_select_columnas button.dropdown-toggle").first
+            boton_columnas.click()
+            
+            boton_ninguno = page.locator("button.bs-deselect-all:visible").first
+            boton_ninguno.wait_for(state="visible", timeout=5000)
+            boton_ninguno.click()
+            page.wait_for_timeout(500)
+            
+            columnas_requeridas = col_table
+            
+            menu_visible = page.locator(".dropdown-menu.open:visible").first
+            if columnas_requeridas:
+                for col in columnas_requeridas:
+                    try:
+                        opcion = menu_visible.locator("span.text").filter(has_text=re.compile(f"^\\s*{re.escape(col)}\\s*$", re.IGNORECASE)).first
+                        opcion.wait_for(state="attached", timeout=1500)
+                        opcion.evaluate("node => node.click()")
+                    except Exception:
+                        print(f"⚠️ Aviso: No se encontró la columna '{col}', omitiendo...")
+            
+            page.keyboard.press("Escape") 
+            page.wait_for_timeout(500)
+            print("🔄 Refrescando la tabla con las columnas seleccionadas...")
+            btn_buscar.evaluate("node => node.click()")
+            page.wait_for_timeout(3000)
+    except Exception as e:
+        print(f"⚠️ Aviso al configurar columnas: {e}")

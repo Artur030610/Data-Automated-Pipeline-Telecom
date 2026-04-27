@@ -27,7 +27,7 @@ def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = No
     ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         

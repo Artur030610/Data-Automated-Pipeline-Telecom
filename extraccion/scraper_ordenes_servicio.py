@@ -3,6 +3,7 @@ import sys
 import datetime
 import re
 import shutil
+import pandas as pd
 from playwright.sync_api import sync_playwright
 
 # --- EL TRUCO DEL ASCENSOR PARA IMPORTAR UTILS ---
@@ -35,7 +36,7 @@ def descargar_ordenes_servicio(fecha_inicial_str: str, fecha_final_str: str):
     ruta_destino_sla = os.path.join(ruta_destino_sla_dir, nombre_archivo_sla)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         
@@ -127,14 +128,40 @@ def descargar_ordenes_servicio(fecha_inicial_str: str, fecha_final_str: str):
         except Exception as e:
             console.print(f"[bold red]⚠️ Aviso al configurar columnas: {e}[/]")
 
-        ejecutar_descarga(page=page, ruta_destino=ruta_destino_idf, seleccionar_todos=False)
-        
+        ruta_destino, download = ejecutar_descarga(
+            page=page, 
+            ruta_destino=ruta_destino_idf, 
+            seleccionar_todos=False, 
+            locator_descarga=page.get_by_role("button", name=re.compile(r"Exportar|Descargar", re.IGNORECASE)).first
+        )
+            
+        print("🔄 Convirtiendo formato nativo de SAE a XLSX puro...")
+        ruta_temporal = ruta_destino.replace(".xlsx", ".xls")
+        try:
+            if os.path.exists(ruta_temporal):
+                os.remove(ruta_temporal)
+            os.rename(ruta_destino, ruta_temporal)
+            
+            try:
+                df_descarga = pd.read_html(ruta_temporal, decimal=',', thousands='.')[0]
+            except Exception:
+                df_descarga = pd.read_excel(ruta_temporal, engine="calamine")
+                    
+            df_descarga = df_descarga.loc[:, ~df_descarga.columns.str.contains('^Unnamed')]
+            df_descarga.to_excel(ruta_destino, index=False)
+            os.remove(ruta_temporal)
+            print(f"✅ Archivo convertido y guardado exitosamente en:\n   {ruta_destino}")
+        except Exception as e:
+            print(f"⚠️ Error convirtiendo a XLSX ({e}). Se conservará en el formato original.")
+            if os.path.exists(ruta_temporal):
+                os.rename(ruta_temporal, ruta_destino)
+                
         console.print("🗂️ Duplicando el reporte para la carpeta SLA...")
+        
         shutil.copy2(ruta_destino_idf, ruta_destino_sla)
         console.print(f"✅ Archivo SLA guardado exitosamente en:\n   {ruta_destino_sla}")
-
         browser.close()
 
 if __name__ == "__main__":
     # Prueba rápida
-    descargar_ordenes_servicio("01/02/2026", "15/03/2026")
+    descargar_ordenes_servicio("01/09/2025", "15/10/2025")

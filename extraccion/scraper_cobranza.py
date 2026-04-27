@@ -15,7 +15,7 @@ from utils import reportar_tiempo, console
 
 @reportar_tiempo
 def descargar_cobranza(fecha_inicial_str: str, fecha_final_str: str):
-    console.print(f" [bold cyan]🎧 Iniciando extracción de Atención al Cliente ({fecha_inicial_str} - {fecha_final_str})...[/]")
+    console.print(f" [bold cyan]🎧 Iniciando extracción de Llamadas de Cobranza ({fecha_inicial_str} - {fecha_final_str})...[/]")
     
     # =========================================================
     # 1. FECHAS Y NOMBRES DE ARCHIVO
@@ -37,7 +37,7 @@ def descargar_cobranza(fecha_inicial_str: str, fecha_final_str: str):
     # =========================================================
     with sync_playwright() as p:
         # IMPORTANTE: headless=False para poder ver y usar el page.pause()
-        browser = p.chromium.launch(headless=False) 
+        browser = p.chromium.launch(headless=True) 
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         

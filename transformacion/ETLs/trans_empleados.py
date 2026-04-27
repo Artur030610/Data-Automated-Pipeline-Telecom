@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import leer_carpeta, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console, archivos_raw
+from utils import ingesta_incremental_polars, guardar_parquet, reportar_tiempo, limpiar_nulos_powerbi, console
 
 # =============================================================================
 # 1. CONFIGURACIÓN DE FILTROS
@@ -65,7 +65,11 @@ def ejecutar():
 
     # Respaldamos la raw en bronze para mantener la arquitectura
     try:
-        archivos_raw(RUTA_RAW, RUTA_BRONZE)
+        ingesta_incremental_polars(
+            ruta_raw=RUTA_RAW,
+            ruta_bronze_historico=RUTA_BRONZE,
+            columna_fecha=None
+        )
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze no se actualizó, pero el ETL continuará. Error: {e}[/]")
 

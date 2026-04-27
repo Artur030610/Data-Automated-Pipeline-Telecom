@@ -97,8 +97,7 @@ def descargar_recaudacion_y_horas(fecha_inicial_str: str, fecha_final_str: str):
                 buscador.fill(exc)
                 page.wait_for_timeout(600) # Pausa crucial para permitir que la animación de filtrado termine
                 page.locator("button.bs-deselect-all:visible").first.evaluate("node => node.click()")
-                page.wait_for_timeout(200)
-                
+                page.wait_for_timeout(1000)
             page.keyboard.press("Escape")
             page.wait_for_timeout(500)
         except Exception as e:
@@ -220,4 +219,4 @@ def descargar_recaudacion_y_horas(fecha_inicial_str: str, fecha_final_str: str):
         browser.close()
 
 if __name__ == "__main__":
-    descargar_recaudacion_y_horas("20/03/2026", "23/03/2026")
+    descargar_recaudacion_y_horas("20/04/2026", "23/04/2026")

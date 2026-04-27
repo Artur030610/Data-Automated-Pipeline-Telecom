@@ -12,30 +12,24 @@ from utils import tiempo, audit_performance, liberar_ram_os
 # ========================================================
 from transformacion.ETLs import (
     # --- INGRESOS ---
-    recaudacion,            # 1. Financiero
-    ventas,                 # 2. Comercial
-    ventase,                # 2. Estatus
-    
-    # --- SOPORTE & OPERACIONES ---
-    reclamos,               # 3. Soporte
-    atc,                    # 4. Atención
-    cobranza,               # 7. Operativo
-    
-    # --- RRHH & CALIDAD ---
-    actualizacion_datos,    # 11. Calidad de Datos
-    comeback,               # 12. Recuperación de Clientes
-    empleados,              # 17. RRHH
-    
-    # --- SUITE INDICADORES TÉCNICOS ---
-    abonados_idf,           # 1. Denominador (Stock de Clientes)
-    ordenes_servicio,     # 2. Maestro Tickets (IDF + SLA)
-    dim_franquicias,        # 3. El Puente (Dimensión)
-    
+    trans_abonados_idf,
+    trans_actualizacion_datos,
+    trans_afluencia_gold,
+    trans_afluencia_silver,
+    trans_atc,
+    trans_cobranza,
+    trans_comeback,
+    trans_dim_franquicias,
+    trans_dimclientes,
+    trans_empleados,
+    trans_estadistica_abonado,
+    trans_ont_off,
+    trans_ordenes_servicio,
+    trans_recaudacion,
+    trans_reclamos,
+    trans_ventase,            # 1. Financiero
+    trans_ventas                 # 2. Comercial           # 1. Denominador (Stock de Clientes)        # 3. El Puente (Dimensión),
     # --- TRANSFORMACIONES & DW ---
-    etl_afluencia_silver, 
-    etl_afluencia_gold,
-    dimclientes,
-    estadistica_abonado
 )
 
 console = Console(theme=THEME_COLOR)
@@ -46,9 +40,9 @@ console = Console(theme=THEME_COLOR)
 # --- PIPELINE DE AFLUENCIA ---
 class PipelineAfluencia:
     def ejecutar(self):
-        ruta_silver = etl_afluencia_silver.ejecutar() 
+        ruta_silver = trans_afluencia_silver.ejecutar() 
         if ruta_silver:
-            etl_afluencia_gold.ejecutar(ruta_silver)
+            trans_afluencia_gold.ejecutar(ruta_silver)
 
 afluencia_completa = PipelineAfluencia()
 
@@ -65,15 +59,15 @@ class PipelineIndicadores:
         
         # PASO 1: Generar el Denominador (Abonados)
         console.print("\n[dim]1. Actualizando Stock de Abonados...[/]")
-        abonados_idf.ejecutar()
+        trans_abonados_idf.ejecutar()
         
         # PASO 2: Generar Numeradores y Tiempos (Script Unificado)
         console.print("\n[dim]2. Procesando Tickets (Fallas y SLAs)...[/]")
-        ordenes_servicio.ejecutar()
+        trans_ordenes_servicio.ejecutar()
         
         # PASO 3: Crear la Dimensión que los une
         console.print("\n[dim]3. Regenerando Dimensión Franquicias...[/]")
-        dim_franquicias.ejecutar()
+        trans_dim_franquicias.ejecutar()
         
         console.print("[bold green]✅ Suite de Indicadores sincronizada correctamente.[/]")
 
@@ -103,39 +97,41 @@ def ejecutar_wrapper(modulo):
 MENU = {
     "1":  {"icono": "🚀", "label": "EJECUTAR TODO (Full Data Warehouse)", "target": [
         # FASE 1: INGESTA BASE
-        recaudacion, ventas, ventase, reclamos, atc, cobranza,
-        actualizacion_datos, comeback, empleados,
+        trans_recaudacion, trans_ventas, trans_ventase, trans_reclamos, trans_atc, trans_ont_off,
+        trans_cobranza,trans_actualizacion_datos, trans_comeback, trans_empleados,
         
         # FASE 2: SUITE DE INDICADORES (Abonados -> Tickets -> Dimensión)
         idf_suite_completa,
         
         # FASE 3: HECHOS FINALES
-        estadistica_abonado,
+        trans_estadistica_abonado,
         afluencia_completa
     ]},
     
     # --- OPCIONES INDIVIDUALES ---
-    "2":  {"icono": "💰", "label": "Recaudación",             "target": recaudacion},
-    "3":  {"icono": "📊", "label": "Ventas (General)",        "target": ventas},
-    "4":  {"icono": "💼", "label": "Ventas (Estatus)",        "target": ventase},
-    "5":  {"icono": "🛠️", "label": "Reclamos",                "target": reclamos},
-    "6":  {"icono": "🎧", "label": "Atención al Cliente",     "target": atc},
+    "2":  {"icono": "💰", "label": "Recaudación",             "target": trans_recaudacion},
+    "3":  {"icono": "📊", "label": "Ventas (General)",        "target": trans_ventas},
+    "4":  {"icono": "💼", "label": "Ventas (Estatus)",        "target": trans_ventase},
+    "5":  {"icono": "🛠️", "label": "Reclamos",                "target": trans_reclamos},
+    "6":  {"icono": "🎧", "label": "Atención al Cliente",     "target": trans_atc},
     
     # --- AQUÍ ESTÁ LA MAGIA ---
     # La opción 7 ahora corre TODA la lógica necesaria para que Power BI no falle
     "7":  {"icono": "📉", "label": "Suite Técnica (IDF + SLA + Abonados)", "target": idf_suite_completa},
     
     # La opción 8 apunta al master por si solo quieres actualizar tickets sin re-leer abonados
-    "8":  {"icono": "📜", "label": "Solo Tickets (IDF/SLA)",  "target": ordenes_servicio},
-    "9":  {"icono": "📞", "label": "Gestión Cobranza",        "target": cobranza},
-    "10": {"icono": "📝", "label": "Actualización Datos",     "target": actualizacion_datos},
-    "11": {"icono": "🏠", "label": "Come Back Home",          "target": comeback},
-    "12": {"icono": "👤", "label": "Empleados (RRHH)",        "target": empleados},
+    "8":  {"icono": "📜", "label": "Solo Tickets (IDF/SLA)",  "target": trans_ordenes_servicio},
+    "9":  {"icono": "📞", "label": "Gestión Cobranza",        "target": trans_cobranza},
+    "10": {"icono": "📝", "label": "Actualización Datos",     "target": trans_actualizacion_datos},
+    "11": {"icono": "🏠", "label": "Come Back Home",          "target": trans_comeback},
+    "12": {"icono": "👤", "label": "Empleados (RRHH)",        "target": trans_empleados},
     
     # --- TRANSFORMACIONES ---
-    "13": {"icono": "💎", "label": "Dimensión Clientes",      "target": dimclientes},
-    "14": {"icono": "📈", "label": "Estadística Abonado",     "target": estadistica_abonado},
-    "15": {"icono": "🔄", "label": "Afluencia (Silver+Gold)", "target": afluencia_completa}
+    "13": {"icono": "💎", "label": "Dimensión Clientes",      "target": trans_dimclientes},
+    "14": {"icono": "📈", "label": "Estadística Abonado",     "target": trans_estadistica_abonado},
+    "15": {"icono": "🔄", "label": "Afluencia (Silver+Gold)", "target": afluencia_completa},
+    "16": {"icono": "🎧", "label": "ONTs Apagadas (Gold)",    "target": trans_ont_off},
+    
 }
 
 def mostrar_menu():

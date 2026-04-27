@@ -1,0 +1,18 @@
+from playwright.sync_api import sync_playwright
+
+def probar_bypass():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        
+        # Aquí Playwright se pone tu "pulsera VIP"
+        context = browser.new_context(storage_state="auth.json")
+        page = context.new_page()
+        
+        print("Entrando al SAE con nueva IP...")
+        page.goto("https://fibex.saeplus.com") 
+        
+        page.pause() 
+        browser.close()
+
+if __name__ == "__main__":
+    probar_bypass()

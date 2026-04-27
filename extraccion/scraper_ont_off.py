@@ -14,8 +14,8 @@ from config import PATHS
 from utils import reportar_tiempo, console
 
 @reportar_tiempo
-def descargar_atc(fecha_inicial_str: str, fecha_final_str: str):
-    console.print(f" [bold cyan]🎧 Iniciando extracción de Atención al Cliente ({fecha_inicial_str} - {fecha_final_str})...[/]")
+def descargar_ont_off(fecha_inicial_str: str, fecha_final_str: str):
+    console.print(f" [bold cyan]🎧 Iniciando extracción de ONT_OFF CC ({fecha_inicial_str} - {fecha_final_str})...[/]")
     
     # =========================================================
     # 1. FECHAS Y NOMBRES DE ARCHIVO
@@ -23,12 +23,12 @@ def descargar_atc(fecha_inicial_str: str, fecha_final_str: str):
     f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
     f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
     
-    nombre_archivo = f"Data - ATC {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
+    nombre_archivo = f"Data - ONT_OFF_CC {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
     
     # =========================================================
     # 2. DEFINIMOS LA RUTA DESTINO EXACTA (Ajustar a tu Data Lake)
     # =========================================================
-    ruta_destino_dir = str(PATHS.get("raw_atencion"))
+    ruta_destino_dir = str(PATHS.get("raw_ont_off"))
     os.makedirs(ruta_destino_dir, exist_ok=True)
     ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
     
@@ -37,23 +37,24 @@ def descargar_atc(fecha_inicial_str: str, fecha_final_str: str):
     # =========================================================
     with sync_playwright() as p:
         # IMPORTANTE: headless=False para poder ver y usar el page.pause()
-        browser = p.chromium.launch(headless=True) 
+        browser = p.chromium.launch(headless=False) 
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         
         # --- LOGIN (Reutilizando utilería) ---
         login_sae(page)
-
+        page.pause()
         descargar_listado_llamadas(
             page=page,
             fecha_inicial_str=fecha_inicial_str,
             fecha_final_str=fecha_final_str,
             ruta_destino=ruta_destino,
-            tipo_llamada="GESTION OFICINA COMERCIAL"
+            tipo_llamada="GESTIÓN CALL CENTER",
+            tipo_respuesta="CLIENTE ACTIVO CON ONT APAGADA"
         )
         
         browser.close()
 
 if __name__ == "__main__":
     # Fechas de prueba
-    descargar_atc("01/04/2026", "06/04/2026")
+    descargar_ont_off("21/04/2026", "27/04/2026")

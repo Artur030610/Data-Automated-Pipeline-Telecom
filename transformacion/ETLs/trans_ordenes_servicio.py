@@ -214,13 +214,15 @@ def ejecutar():
             df_total[c] = pd.to_datetime(df_total[c], errors='coerce', dayfirst=True)
 
         delta_res = df_total['Fecha Cierre'] - df_total['Fecha Apertura']
-        df_total['SLA Resolucion Min'] = (delta_res.dt.total_seconds() / 60).round(2)
-        df_total['SLA Despacho Min']   = ((df_total['Fecha Cierre'] - df_total['Fecha Impresion']).dt.total_seconds() / 60).round(2)
-        df_total['SLA Impresion Min']  = ((df_total['Fecha Impresion'] - df_total['Fecha Apertura']).dt.total_seconds() / 60).round(2)
+        
+        # FIX: Prevenir ruido en DAX causado por tiempos negativos (errores de fecha en el ERP)
+        df_total['SLA Resolucion Min'] = (delta_res.dt.total_seconds() / 60).round(2).clip(lower=0)
+        df_total['SLA Despacho Min']   = ((df_total['Fecha Cierre'] - df_total['Fecha Impresion']).dt.total_seconds() / 60).round(2).clip(lower=0)
+        df_total['SLA Impresion Min']  = ((df_total['Fecha Impresion'] - df_total['Fecha Apertura']).dt.total_seconds() / 60).round(2).clip(lower=0)
         
         df_total['Fecha Apertura Date'] = df_total['Fecha Apertura'].dt.normalize()
         df_total['Fecha Cierre Date'] = df_total['Fecha Cierre'].dt.normalize()
-        df_total['Duracion_Horas'] = (delta_res.dt.total_seconds() / 3600)
+        df_total['Duracion_Horas'] = df_total['SLA Resolucion Min'] / 60
         df_total['Es_Falla'] = 1 
         
         df_total['Cumplio_SLA'] = np.where((df_total['Duracion_Horas'] > 0) & (df_total['Duracion_Horas'] <= HORAS_SLA_META), 1, 0)
@@ -244,7 +246,7 @@ def ejecutar():
 
         # --- C. GOLD IDF ---
         df_gold_idf = df_silver.groupby(
-            ["Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
+            ["Quincena Evaluada", "FechaFin", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
             as_index=False
         ).agg(Total_Fallas=("N° Orden", "nunique"))
         df_gold_idf = df_gold_idf.reindex(columns=ORDEN_FINAL_GOLD_IDF)
@@ -252,10 +254,19 @@ def ejecutar():
 
         # --- D. GOLD SLA-STATS ---
         console.print("🚀 Generando Gold: SLA-Stats (Precisión absoluta para DAX)...")
-        df_gold_stats = df_silver[["Quincena Evaluada", "Franquicia", "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]].copy()
+        df_gold_stats = df_silver[["Quincena Evaluada", "FechaFin", "Franquicia", "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]].copy()
         
         df_gold_stats = df_gold_stats.dropna(subset=['SLA Resolucion Min'])
-        df_gold_stats.loc[df_gold_stats['SLA Resolucion Min'] < 1, 'SLA Resolucion Min'] = 1
+        
+        # FIX ABSOLUTO: Filtrar y blindar para que SLA-Stats sea idéntico al SLA Normal
+        df_gold_stats = df_gold_stats[df_gold_stats['SLA Resolucion Min'] > 0]
+        
+        df_gold_stats['SLA Resolucion Min'] = df_gold_stats['SLA Resolucion Min'].clip(lower=1)
+        df_gold_stats['SLA Impresion Min']  = df_gold_stats['SLA Impresion Min'].fillna(0).clip(lower=0)
+        
+        # Garantizamos la coherencia matemática: Impresión + Despacho = Resolución
+        df_gold_stats['SLA Impresion Min']  = df_gold_stats[['SLA Impresion Min', 'SLA Resolucion Min']].min(axis=1)
+        df_gold_stats['SLA Despacho Min']   = df_gold_stats['SLA Resolucion Min'] - df_gold_stats['SLA Impresion Min']
         
         df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
         guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)

@@ -5,8 +5,8 @@ from rich.panel import Panel
 
 # --- IMPORTACIÓN DE MÓDULOS ---
 try:
-    import etl_afluencia_silver
-    import etl_afluencia_gold
+    import transformacion.ETLs.trans_afluencia_silver as trans_afluencia_silver
+    import transformacion.ETLs.trans_afluencia_gold as trans_afluencia_gold
     from config import PATHS
 except ImportError as e:
     print(f"❌ Error Crítico: No se encuentran los módulos necesarios ({e}).")
@@ -33,7 +33,7 @@ def ejecutar_pipeline_completo():
     
     try:
         # Ahora Silver genera el archivo desde 0, eliminando errores de la mañana
-        ruta_resultado_silver = etl_afluencia_silver.ejecutar()
+        ruta_resultado_silver = trans_afluencia_silver.ejecutar()
         
         if not ruta_resultado_silver or not os.path.exists(ruta_resultado_silver):
             console.print("[bold red]❌ FALLO CRÍTICO EN SILVER[/]")
@@ -54,7 +54,7 @@ def ejecutar_pipeline_completo():
     
     try:
         # Gold recibe el Silver completo y aplica Dim Oficinas a toda la historia
-        etl_afluencia_gold.ejecutar(ruta_resultado_silver)
+        trans_afluencia_gold.ejecutar(ruta_resultado_silver)
         
         ruta_gold_esperada = os.path.join(PATHS["gold"], "Afluencia_Gold.parquet")
         if os.path.exists(ruta_gold_esperada):

@@ -65,7 +65,7 @@ def ejecutar():
         ingesta_incremental_polars(
             ruta_raw=RUTA_RAW_HORAS,
             ruta_bronze_historico=RUTA_BRONZE_HORAS,
-            columna_fecha=None  
+            columna_fecha="Fecha"  
         )
     except Exception as e:
         console.print(f"[yellow]⚠️ La capa Bronze de Horas no se actualizó. Error: {e}[/]")
@@ -84,8 +84,8 @@ def ejecutar():
     
     try:
         con = duckdb.connect(database=':memory:')
-        con.execute("PRAGMA threads=2") 
-        con.execute("PRAGMA memory_limit='2GB'") 
+        con.execute("PRAGMA threads=8") 
+        con.execute("PRAGMA memory_limit='3GB'") 
         con.execute("SET preserve_insertion_order=false") 
         
         temp_dir = os.path.join(PATHS.get("bronze", "data/bronze"), "duckdb_temp").replace("\\", "/")

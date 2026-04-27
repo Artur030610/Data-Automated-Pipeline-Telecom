@@ -37,7 +37,7 @@ def descargar_ventas_estatus(fecha_inicial_str: str, fecha_final_str: str):
     # 3. PLAYWRIGHT: NAVEGACIÓN Y DESCARGA DIRECTA
     # =========================================================
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False) 
+        browser = p.chromium.launch(headless=True) 
         
         # Configuramos el contexto para aceptar descargas automáticamente
         context = browser.new_context(accept_downloads=True)

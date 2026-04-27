@@ -9,7 +9,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 from config import PATHS
-from utils import leer_carpeta, reportar_tiempo, console, archivos_raw
+from utils import ingesta_incremental_polars, reportar_tiempo, console
 
 @reportar_tiempo
 def ejecutar():
