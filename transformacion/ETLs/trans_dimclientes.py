@@ -115,7 +115,7 @@ def ejecutar():
             os.remove(RUTA_GOLD_COMPLETA)
         os.rename(RUTA_GOLD_COMPLETA + ".temp", RUTA_GOLD_COMPLETA)
         
-        count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{RUTA_GOLD_COMPLETA}')").fetchone()[0]
+        count = con.execute(f"SELECT COUNT(*) FROM read_parquet('{RUTA_GOLD_COMPLETA}')").fetchone()[0] #type: ignore
         console.print(f"[bold green]✅ Dim_Cliente generada exitosamente. Total abonados únicos: {count:,}[/]")
 
     except Exception as e:

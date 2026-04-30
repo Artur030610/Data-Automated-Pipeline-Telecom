@@ -71,7 +71,7 @@ def ejecutar():
                 "Hora Llamada": "Hora",
                 "Franquicia": "Nombre Franquicia"
             })
-            df_temp["Origen"] = df_temp.get("Source.Name", "").astype(str).str.upper()
+            df_temp["Origen"] = df_temp.get("Source.Name", "").astype(str).str.upper() #type: ignore    
             dfs_para_anexar.append(df_temp)
             console.print(f"   🔹 {carpeta}: {len(df_temp)} registros históricos en Bronze.")
 
@@ -89,7 +89,7 @@ def ejecutar():
             df_temp = df_temp.rename(columns={"Franquicia": "Nombre Franquicia"})
             df_temp = df_temp.drop(columns=[c for c in ["Observacion", "Asunto"] if c in df_temp.columns])
             
-            df_temp["Origen"] = df_temp.get("Source.Name", "").astype(str).str.upper()
+            df_temp["Origen"] = df_temp.get("Source.Name", "").astype(str).str.upper() #type: ignore
             dfs_para_anexar.append(df_temp)
             console.print(f"   🔹 {carpeta}: {len(df_temp)} registros históricos en Bronze.")
 

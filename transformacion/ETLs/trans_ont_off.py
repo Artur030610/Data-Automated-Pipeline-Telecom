@@ -84,4 +84,5 @@ def ejecutar():
     df_final.sink_parquet(RUTA_GOLD_COMPLETA, compression="zstd", row_group_size=100000)
     print(df_final.describe())
     
-ejecutar()
+if __name__ == "__main__":
+    ejecutar()

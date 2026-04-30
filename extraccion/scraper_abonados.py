@@ -36,7 +36,7 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
     
     # Utilización de Headless en False para depuración o True para fondo
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False) 
+        browser = p.chromium.launch(headless=True) 
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         
@@ -45,7 +45,6 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
         col = ["N° Abonado", "Cliente", "Fecha Contrato", "Estatus",
                 "Suscripción","Grupo Afinidad", "Nombre Franquicia",
                 "Ciudad", "Vendedor", "Serv/Paquete"]
-        page.pause()
         listado_abonados(page, fecha_inicial_str, today, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
         
 

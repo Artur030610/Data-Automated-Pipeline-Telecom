@@ -6,21 +6,31 @@ echo ==================================================
 
 set "PY_JEFE=%USERPROFILE%\Documents\A-DataStack\01-Proyectos\00-Toolkits\WPy64-312101\python\python.exe"
 set "PY_JOSE=%USERPROFILE%\Documents\A-DataStack\00-Toolkits\WinPython\WPy64-312101\python\python.exe"
+set "PY_VENV=%~dp0venv\Scripts\python.exe"
 
 :: APUNTAMOS A AMBOS MAINS
 set "MAIN_EXTRACCION=%~dp0extraccion\main.py"
 set "MAIN_TRANSFORMACION=%~dp0main.py"
 
-if exist "%PY_JEFE%" (
+if exist "%PY_VENV%" (
+    set "FINAL_PY=%PY_VENV%"
+    echo [OK] Entorno Virtual local detectado.
+) else if exist "%PY_JEFE%" (
     set "FINAL_PY=%PY_JEFE%"
     echo [OK] Entorno de JEFE detectado.
 ) else if exist "%PY_JOSE%" (
     set "FINAL_PY=%PY_JOSE%"
     echo [OK] Entorno de JOSE detectado.
 ) else (
-    echo [!] ERROR: No encuentro el archivo python.exe
-    pause
-    exit
+    python --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        set "FINAL_PY=python"
+        echo [OK] Python global del sistema detectado.
+    ) else (
+        echo [!] ERROR: No encuentro Python. Ejecuta Setup_Inicial.bat primero o instala Python.
+        pause
+        exit
+    )
 )
 
 echo.

@@ -143,7 +143,7 @@ def ejecutar():
         con.execute(query)
         
         # Obtener registro de filas para el log con un simple count en metadatos
-        filas_finales = con.execute(f"SELECT COUNT(*) FROM read_parquet('{RUTA_GOLD_COMPLETA.replace(chr(92), '/')}')").fetchone()[0]
+        filas_finales = con.execute(f"SELECT COUNT(*) FROM read_parquet('{RUTA_GOLD_COMPLETA.replace(chr(92), '/')}')").fetchone()[0] #type: ignore
         con.close()
         
         console.print(f"[bold green]✅ Cobranza Gold reconstruido a velocidad luz. Total filas únicas: {filas_finales:,}[/]")

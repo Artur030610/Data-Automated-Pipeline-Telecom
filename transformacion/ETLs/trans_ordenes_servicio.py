@@ -134,7 +134,7 @@ def ejecutar():
     try: archivos_raw(ruta_origen, archivo_bronze_salida)
     except Exception: pass
 
-    archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
+    archivos = glob.glob(os.path.join(ruta_origen, "*.xlsx")) #type: ignore
     console.print(f"📂 Se encontraron {len(archivos)} archivos. Procesando...")
 
     dataframes_procesados = []
@@ -162,8 +162,8 @@ def ejecutar():
             if "Fecha Creacion" not in df.columns: continue
 
             # --- FILTRO HÍBRIDO: EL AJUSTE PARA EL BACKLOG ---
-            limite_inferior = fecha_fin.replace(day=fecha_inicio.day)
-            limite_superior = fecha_fin + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            limite_inferior = fecha_fin.replace(day=fecha_inicio.day) #type: ignore
+            limite_superior = fecha_fin + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) #type: ignore
             
             mask_cerrados_aqui = (df["Fecha Finalizacion"] >= limite_inferior) & (df["Fecha Finalizacion"] <= limite_superior) if "Fecha Finalizacion" in df.columns else pd.Series(False, index=df.index)
 
