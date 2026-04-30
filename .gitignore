@@ -3,6 +3,7 @@ service_account.json
 client_secret.json
 credentials.json
 *.env
+reglas_negocio.json
 
 # --- PYTHON ---
 __pycache__/

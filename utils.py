@@ -1,3 +1,8 @@
+#En utils.py se encuentran todas las utilidades, es decir funciones modulares que se reutilizan a fin de optimizar las transformaciones. 
+#La intención es cumplir con los principios de no repetición, modularidad y claridad. de igual forma se busca que las funciones tengan una 
+#única responsabilidad, es decir que cada función cumpla con una tarea específica y bien definida. 
+# En cada función se encontrara una descripción detallada de su propósito, sus parámetros de entrada y su valor de retorno.
+
 import pandas as pd
 import numpy as np 
 import glob
@@ -60,7 +65,8 @@ warnings.simplefilter(action='ignore')
 def liberar_ram_os():
     """
     Fuerza a Python y al Pool de Memoria de C++ (PyArrow) 
-    a devolver la RAM retenida al Sistema Operativo instantáneamente.
+    a devolver la RAM retenida al Sistema Operativo instantáneamente a fin de 
+    evitar Out-Of-Memory.
     """
     import gc
     gc.collect()
@@ -95,7 +101,7 @@ logger_extraccion.setLevel(logging.INFO)
 def audit_performance(func):
     """Registra inicio, fin, registros y el consumo 
     promedio de RAM, es utilizada para la evaluación de desempeño
-    de los flujos."""
+    de los flujos, asi como para el registro en los logs."""
     @wraps(func)
     def wrapper(*args, **kwargs):
         inicio = time.time()
@@ -126,6 +132,62 @@ def audit_performance(func):
             logger.error(f"FALLO:  [{func.__name__}] | Error: {str(e)}", exc_info=True)
             raise e 
     return wrapper
+
+# La intención de esta función es la implementación del star schema en el modelo de Power BI
+# Se asigna un Cliente_SK el cual sera un numero entero a fin de funcionar como llave principal en Dim_Cliente y llave foranea en las tablas de hechos
+# lo que permite disminuir la cardinalidad del modelo. 
+# Con DaxStudio (Software gratuito) se puede comprobar la cardinalidad de las columnas del modelo. 
+# El resultado sugiere una reducción en 'N° de abonado' sustituyendo esta clave por un entero a traves de llaves subrogadas.
+
+def asignar_cliente_sk(df, col_abonado="N° Abonado"): 
+    """
+    Enriquece una tabla de hechos agregando la clave subrogada entera 'Cliente_SK' 
+    desde la Dimensión Cliente. Conserva el tipo de DataFrame original (Pandas o Polars).
+    Asigna -1 a los registros que no crucen para mantener la integridad referencial.
+    """
+    ruta_dim = os.path.join(PATHS.get("gold", "data/gold"), "Dim_Cliente.parquet").replace("\\", "/")
+    
+    if not os.path.exists(ruta_dim):
+        console.print("[yellow]⚠️ Dim_Cliente.parquet no existe. Se asignará Cliente_SK = -1 por defecto.[/]")
+        if isinstance(df, pd.DataFrame):
+            df["Cliente_SK"] = -1
+        else:
+            df = df.with_columns(pl.lit(-1).alias("Cliente_SK"))
+        return df
+        
+    console.print("[dim]🔗 Cruzando con Dim_Cliente para obtener Cliente_SK (ID Entero)...[/]")
+    
+    con = duckdb.connect(database=':memory:')
+    
+    # Manejo transparente de LazyFrames de Polars
+    is_lazy = False
+    if hasattr(df, "collect"):
+        df = df.collect()
+        is_lazy = True
+        
+    con.register('df_hechos', df)
+    
+    query = f"""
+        SELECT 
+            COALESCE(d.Cliente_SK, -1) AS Cliente_SK,
+            h.*
+        FROM df_hechos h
+        LEFT JOIN read_parquet('{ruta_dim}') d
+          ON CAST(h."{col_abonado}" AS VARCHAR) = CAST(d."N° Abonado" AS VARCHAR)
+    """
+    
+    try:
+        if isinstance(df, pd.DataFrame):
+            df_res = con.execute(query).df()
+        else:
+            df_res = con.execute(query).pl()
+            if is_lazy: df_res = df_res.lazy()
+        return df_res
+    except Exception as e:
+        console.print(f"[bold red]❌ Error al asignar Cliente_SK: {e}[/]")
+        return df
+    finally:
+        con.close()
 
 def reportar_tiempo(func):
     """Registra tiempos detallados, selección de logger y el promedio de consumo de RAM."""
@@ -176,7 +238,9 @@ def archivos_raw(ruta_raw, ruta_destino_parquet):
     """
     Extrae Excels crudos y los consolida en un único Parquet (Capa Bronze).
     Usa Polars y Calamine para máximo rendimiento. No altera los datos. Busca
-    reproducir la fuente de la verdad tal cual está en los Excels.
+    reproducir la fuente de la verdad tal cual está en los Excels. 
+    Esto permite mantener un historico, al tiempo que se disminuye el computo necesario 
+    para realizar los procesos de transformación posteriores.
     """
     archivos = glob.glob(os.path.join(ruta_raw, "*.xlsx"))
     archivos_validos = [
@@ -243,6 +307,8 @@ def archivos_raw(ruta_raw, ruta_destino_parquet):
         console.print(f"[bold red]❌ FALLO CRÍTICO en Bronze: {e}[/]")
         raise
 
+# Función principal, utilizada en cada uno de los scripts de transformación, 
+# la cual se encarga de realizar la ingesta incremental utilizando Polars y DuckDB.
 @audit_performance
 def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=None):
     """
@@ -250,7 +316,7 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
     1. Lee los Excels nuevos con Polars (calamine) a máxima velocidad.
     2. Descarga a disco como Parquets temporales, liberando la RAM archivo por archivo.
     3. Usa DuckDB para unificar el histórico con lo nuevo (UNION ALL BY NAME + DISTINCT), 
-       cruzando Gigabytes de datos en 0 RAM (Out-of-Core directo a disco).
+       cruzando Gigabytes de datos minimizando el consumo de RAM (Out-of-Core directo a disco).
     """
     ref_titulo = columna_fecha if columna_fecha else "Append / Unique"
     console.rule(f"[bold purple]⚡ INGESTA INCREMENTAL (Ref: {ref_titulo})[/]")
@@ -414,7 +480,7 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
             lf_nuevo = pl.concat(lf_temporales, how="diagonal")
             lf_hist = pl.scan_parquet(ruta_bronze_historico)
             lf_final = pl.concat([lf_hist, lf_nuevo], how="diagonal")
-            lf_final.collect(streaming=True).write_parquet(ruta_bronze_historico, compression="snappy")
+            lf_final.collect(streaming=True).write_parquet(ruta_bronze_historico, compression="snappy") #type: ignore
     else:
         os.makedirs(os.path.dirname(ruta_bronze_historico), exist_ok=True)
         ruta_bronze_norm = ruta_bronze_historico.replace("\\", "/")
@@ -431,7 +497,7 @@ def ingesta_incremental_polars(ruta_raw, ruta_bronze_historico, columna_fecha=No
             archivos_glob = glob.glob(os.path.join(temp_parts_path, "*.parquet"))
             lf_temporales = [pl.scan_parquet(f) for f in archivos_glob]
             lf_nuevo = pl.concat(lf_temporales, how="diagonal")
-            lf_nuevo.collect(streaming=True).write_parquet(ruta_bronze_historico, compression="snappy")
+            lf_nuevo.collect(streaming=True).write_parquet(ruta_bronze_historico, compression="snappy") #type: ignore
         finally:
             con.close()
             
@@ -466,6 +532,7 @@ def limpiar_nulos_powerbi(df):
 
     return df
 
+#Función secundaria para la limpieza de columnas de identificación, como cédulas, contratos o RIFs.
 def limpiar_ids_documentos(df, columnas):
     """
     Normaliza columnas de identificación (Cédulas, Contratos, RIFs).
@@ -495,6 +562,9 @@ def limpiar_ids_documentos(df, columnas):
         
     return df
 
+#Función principal para guardar los archivos en formato Parquet, 
+# la cual incluye una lógica anti-lock para evitar errores comunes de archivos abiertos, 
+# así como una limpieza optimizada para Power BI que preserva los null nativos de Python
 def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None):
     """
     Guarda el archivo en Parquet asegurando compatibilidad con Power BI.
@@ -550,8 +620,8 @@ def guardar_parquet(df, nombre_archivo, filas_iniciales=None, ruta_destino=None)
         
         # Determinamos el tipo para el reporte
         tipo = "CUSTOM"
-        if PATHS.get("silver") and PATHS.get("silver") in ruta_salida: tipo = "SILVER"
-        if PATHS.get("gold") and PATHS.get("gold") in ruta_salida: tipo = "GOLD"
+        if PATHS.get("silver") and PATHS.get("silver") in ruta_salida: tipo = "SILVER" #type: ignore
+        if PATHS.get("gold") and PATHS.get("gold") in ruta_salida: tipo = "GOLD"       #type: ignore
 
         if filas_iniciales is not None:
             filas_eliminadas = filas_iniciales - filas_finales

@@ -5,7 +5,7 @@ import re
 import pandas as pd
 import subprocess
 from playwright.sync_api import sync_playwright
-from scraper_utils import login_sae, llenar_fechas_sae
+from scraper_utils import login_sae, listado_abonados
 
 # --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,82 +36,21 @@ def descargar_ventas(fecha_inicial_str: str, fecha_final_str: str):
         
         login_sae(page)
 
-        print("🧭 Navegando al Listado de Abonados...")
-        page.get_by_role("link", name=" Reportes").click()
+        col = [
+            "N° Abonado", "Cliente", "Fecha Contrato", "Estatus",
+            "Suscripción", "Grupo Afinidad", "Nombre Franquicia",
+            "Ciudad", "Vendedor", "Serv/Paquete"
+        ]
         
-        btn_listado = page.get_by_role("link", name=re.compile("Listado De Abonados", re.IGNORECASE))
-        btn_listado.wait_for(state="visible", timeout=5000)
-        btn_listado.click()
-
-        print("☑️ Configurando Estatus de Contratos...")
-        estatus_list = ESTATUS_VENTAS
-        for estatus in estatus_list:
-            # Evitamos que falle si ya estaba marcado o si demora un poco
-            checkbox = page.locator(f"input[id='{estatus}']")
-            checkbox.wait_for(state="attached", timeout=5000)
-            if not checkbox.is_checked():
-                checkbox.check()
-
-        print(f"📅 Aplicando filtros de fecha: {fecha_inicial_str} - {fecha_final_str}")
-        print("👉 Cambiando a la pestaña de Fechas...")
-        page.get_by_role("tab", name=re.compile(r"Fecha", re.IGNORECASE)).click()
-        page.wait_for_timeout(500)
-        
-        llenar_fechas_sae(page, fecha_inicial_str, fecha_final_str, id_desde="input#desde_fecha", id_hasta="input#hasta_fecha")
-        
-        print("📋 Seleccionando Motivo (FECHA CONTRATO)...")
-        page.locator("#motivo").evaluate("""node => {
-            const target = Array.from(node.options).find(opt => opt.text.toUpperCase().includes('FECHA CONTRATO'));
-            if (target) {
-                node.value = target.value;
-                node.dispatchEvent(new Event('change'));
-            }
-        }""")
-        page.wait_for_timeout(500)
-        
-        print("🚀 Ejecutando búsqueda inicial...")
-        btn_buscar = page.get_by_role("button", name=re.compile(r"Buscar", re.IGNORECASE)).first
-        btn_buscar.wait_for(state="visible", timeout=5000)
-        btn_buscar.evaluate("node => node.click()")
-        
-        # ================== SELECCIÓN DE COLUMNAS ESPECÍFICAS ==================
-        print("⏳ Esperando a que el servidor devuelva los resultados...")
-        try:
-            page.wait_for_selector("button#exportar_xlsx", state="visible", timeout=60000)
-            print("⚙️ Configurando columnas específicas (limpiando y marcando)...")
-            
-            boton_columnas = page.locator("div#boton_select_columnas button.dropdown-toggle").first
-            boton_columnas.click()
-            
-            boton_ninguno = page.locator("button.bs-deselect-all:visible").first
-            boton_ninguno.wait_for(state="visible", timeout=5000)
-            boton_ninguno.click()
-            page.wait_for_timeout(500)
-            
-            columnas_requeridas = [
-                "N° Abonado", "Cliente", "Fecha Contrato", "Estatus",
-                "Suscripción", "Grupo Afinidad", "Nombre Franquicia",
-                "Ciudad", "Vendedor", "Serv/Paquete"
-            ]
-            
-            menu_visible = page.locator(".dropdown-menu.open:visible").first
-            for col in columnas_requeridas:
-                try:
-                    opcion = menu_visible.locator("span.text").filter(has_text=re.compile(f"^\\s*{re.escape(col)}\\s*$", re.IGNORECASE)).first
-                    opcion.wait_for(state="attached", timeout=1500)
-                    opcion.evaluate("node => node.click()")
-                except Exception:
-                    print(f"⚠️ Aviso: No se encontró la columna '{col}', omitiendo...")
-            
-            page.keyboard.press("Escape") 
-            page.wait_for_timeout(500)
-            
-            print("🔄 Refrescando la tabla con las columnas seleccionadas...")
-            btn_buscar.evaluate("node => node.click()")
-            page.wait_for_timeout(3000)
-            
-        except Exception as e:
-            print(f"⚠️ Aviso al configurar columnas: {e}")
+        # Centralizamos toda la lógica de navegación y columnas en la función unificada
+        listado_abonados(
+            page, 
+            fecha_inicial_str, 
+            fecha_final_str, 
+            motivo_str=None, #type: ignore
+            estatus_list=ESTATUS_VENTAS, 
+            col_table=col
+        )
 
         # ================== DESCARGA DIRECTA ==================
         print("📥 Interceptando descarga a Excel...")
@@ -154,4 +93,4 @@ def descargar_ventas(fecha_inicial_str: str, fecha_final_str: str):
         subprocess.run([sys.executable, script_fuzzy], check=True)
 
 if __name__ == "__main__":
-    descargar_ventas("20/03/2026", "23/03/2026")
+    descargar_ventas("26/04/2026", "28/04/2026")

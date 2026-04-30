@@ -14,7 +14,7 @@ from utils import reportar_tiempo, console
 from scraper_utils import login_sae, ejecutar_descarga
 
 @reportar_tiempo
-def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = None):
+def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = None): #type: ignore
     console.print(" [bold cyan]👤 Iniciando extracción de Empleados (Datos del día)...[/]")
     
     # El reporte de empleados muestra la plantilla actual, por lo que usamos solo la fecha de hoy
@@ -33,7 +33,6 @@ def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = No
         
         # 1. Login
         login_sae(page)
-
         # 2. Navegación usando los roles extraídos del codegen
         console.print("🧭 Navegando a Configuración -> Administrar Empleados...")
         btn_config = page.get_by_role("link", name=re.compile(r"Configuración", re.IGNORECASE)).first
@@ -47,8 +46,8 @@ def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = No
 
         console.print("⏳ Esperando a que cargue la tabla...")
         # Esperamos a que la primera celda de la tabla tenga datos reales (evita clics prematuros)
-        page.pause()
-        page.locator("tbody td").first.wait_for(state="visible", timeout=60000)
+
+        page.locator("tbody td").first.wait_for(state="attached", timeout=60000)
         
         # 3. Configuración de columnas (Lógica Autónoma)
         console.print("⚙️ Configurando columnas y refrescando tabla de Empleados...")
@@ -75,12 +74,14 @@ def descargar_empleados(fecha_inicial_str: str = None, fecha_final_str: str = No
 
         # 4. Seleccionar "Todos" los registros (Lógica Autónoma)
         console.print("🗂️ Seleccionando 'Todos' los registros de la tabla...")
-        combobox = page.locator("select[name*='length']").first
-        combobox.wait_for(state="attached", timeout=15000)
+        combobox = page.get_by_label("Mostrar 102550100200Todos")
+        
+        #combobox.wait_for(state="attached", timeout=15000)
+        
         try:
-            combobox.select_option(value="-1", timeout=3000)
+            combobox.select_option('-1', timeout=30000)
         except Exception:
-            combobox.select_option(label="Todos", timeout=3000)
+            page.get_by_label("Mostrar 102550100200Todos").select_option('-1')
             
         page.locator("tbody td").first.wait_for(state="visible", timeout=30000)
         page.wait_for_timeout(1000)

@@ -56,4 +56,4 @@ def descargar_cobranza(fecha_inicial_str: str, fecha_final_str: str):
 
 if __name__ == "__main__":
     # Fechas de prueba
-    descargar_cobranza("24/03/2026", "25/03/2026")
+    descargar_cobranza("01/04/2026", "29/04/2026")

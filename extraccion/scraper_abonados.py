@@ -7,7 +7,7 @@ import subprocess
 from playwright.sync_api import sync_playwright
 from scraper_utils import login_sae, listado_abonados
 
-# --- SETUP DE RUTAS (TRUCO DEL ASCENSOR) ---
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -17,8 +17,14 @@ from utils import reportar_tiempo, console
 
 @reportar_tiempo
 def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
-    console.print(f"[bold cyan]📊 Iniciando extracción de Abonados ({fecha_inicial_str} - {fecha_final_str})...[/]")
-    
+    '''Descarga el listado completo de abonados desde SAE, con opción de filtrar por fecha de contrato.
+    Debido a la naturaleza del reporte, se recomienda usar una fecha inicial muy antigua para obtener todos
+    los registros hasta la fecha actual.
+    '''
+    today = datetime.datetime.today().strftime('%d/%m/%Y')
+    fecha_inicial_str = "01/01/1950" #Aseguramos una fecha muy antigua para que tome todos los registros hasta hoy
+
+    console.print(f"[bold cyan]📊 Iniciando extracción de Abonados ({fecha_inicial_str} - {today})...[/]")
     f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
     f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
     
@@ -40,7 +46,7 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
                 "Suscripción","Grupo Afinidad", "Nombre Franquicia",
                 "Ciudad", "Vendedor", "Serv/Paquete"]
         page.pause()
-        listado_abonados(page, fecha_inicial_str, fecha_final_str, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
+        listado_abonados(page, fecha_inicial_str, today, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
         
 
         # ================== DESCARGA DIRECTA ==================

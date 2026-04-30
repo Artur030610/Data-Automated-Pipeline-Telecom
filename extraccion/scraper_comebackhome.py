@@ -15,17 +15,17 @@ from utils import reportar_tiempo, console
 @reportar_tiempo
 def descargar_comebackhome(fecha_inicial_str: str, fecha_final_str: str):
     """
-    Descarga el reporte 'Comebackhome' basado en el Listado de Llamadas.
+    Descarga el reporte 'Comebackhome' (Campaña de Vuelve a Casa) basado en el Listado de Llamadas.
     """
     console.print(f" [bold magenta]🏠 Iniciando extracción de Comebackhome ({fecha_inicial_str} - {fecha_final_str})...[/]")
     
     f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
     f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
     
-    nombre_archivo = f"Data - Comebackhome {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
+    nombre_archivo = f"Data - CBH {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
     
-    # Si no tienes la ruta "raw_comebackhome" en tu config.py, puedes agregarla. Por defecto usa esta:
-    ruta_destino_dir = str(PATHS.get("raw_comebackhome", os.path.join(parent_dir, "data", "raw_comebackhome")))
+    # Si no tienes la ruta "raw_comeback" en tu config.py, puedes agregarla. Por defecto usa esta:
+    ruta_destino_dir = str(PATHS.get("raw_comeback", os.path.join(parent_dir, "data", "raw_comeback")))
     os.makedirs(ruta_destino_dir, exist_ok=True)
     ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
     
@@ -55,4 +55,4 @@ def descargar_comebackhome(fecha_inicial_str: str, fecha_final_str: str):
         browser.close()
 
 if __name__ == "__main__":
-    descargar_comebackhome("01/03/2026", "15/03/2026")
+    descargar_comebackhome("10/04/2026", "30/04/2026")

@@ -43,7 +43,6 @@ def descargar_ont_off(fecha_inicial_str: str, fecha_final_str: str):
         
         # --- LOGIN (Reutilizando utilería) ---
         login_sae(page)
-        page.pause()
         descargar_listado_llamadas(
             page=page,
             fecha_inicial_str=fecha_inicial_str,
@@ -57,4 +56,4 @@ def descargar_ont_off(fecha_inicial_str: str, fecha_final_str: str):
 
 if __name__ == "__main__":
     # Fechas de prueba
-    descargar_ont_off("21/04/2026", "27/04/2026")
+    descargar_ont_off("21/04/2026", "29/04/2026")

@@ -80,12 +80,11 @@ MENU = {
         scraper_estadisticas_abonados.descargar_estadisticas_abonados,
         #scraper_churn_risk.descargar_churn_risk,
         #scraper_ordenes_servicio.descargar_ordenes_servicio,
+        scraper_comebackhome.descargar_comebackhome,
+        scraper_empleados.descargar_empleados,
         scraper_ont_off.descargar_ont_off
     ]},
     "2":  {"icono": "💰", "label": "RECAUDACIÓN Y HORAS DE PAGO", "target": scraper_recaudacion.descargar_recaudacion_y_horas},
-    "2":  {"icono": "💰", "label": "RECAUDACIÓN Y HORAS DE PAGO", "target": [
-        scraper_recaudacion.descargar_recaudacion_y_horas
-    ]},
     "3":  {"icono": "👥", "label": "VENTAS LISTADO DE ABONADOS", "target": scraper_ventas.descargar_ventas},
     "4":  {"icono": "💼", "label": "VENTAS ESTATUS", "target": scraper_ventas_estatus.descargar_ventas_estatus},
     "5":  {"icono": "🎧", "label": "ATENCION AL CLIENTE", "target": scraper_atc.descargar_atc},
@@ -167,9 +166,29 @@ def main():
     
     seleccion = MENU.get(opcion)
     if seleccion:
+        rutinas = seleccion['target']
+        
+        # Si elige la extracción global y no está en modo automático, preguntamos desde dónde iniciar
+        if opcion == "1" and isinstance(rutinas, list) and not auto_mode:
+            console.print("\n[bold cyan]Secuencia de extracción programada:[/]")
+            for i, r in enumerate(rutinas, 1):
+                nombre_limpio = r.__name__.replace('descargar_', '').replace('_', ' ').title()
+                console.print(f"  [green]{i}.[/] {nombre_limpio}")
+            
+            str_inicio = Prompt.ask(
+                "\n[bold yellow]¿Desde qué número deseas reanudar? (Presiona Enter para empezar desde el 1)[/]", 
+                default="1"
+            )
+            try:
+                idx_inicio = int(str_inicio) - 1
+                if 0 <= idx_inicio < len(rutinas):
+                    rutinas = rutinas[idx_inicio:]
+            except ValueError:
+                pass # Si introduce texto no válido, asume el inicio (0)
+
         logger_extraccion.info(f"Ejecutando opción seleccionada: {seleccion['label']} | Fechas: {f_ini} al {f_fin}")
         console.rule(f"[bold blue]Iniciando: {seleccion['label']} ({f_ini} al {f_fin})[/]")
-        ejecutar_wrapper(seleccion['target'], f_ini, f_fin) 
+        ejecutar_wrapper(rutinas, f_ini, f_fin) 
     
     console.rule("[bold green]✅ FIN DE EXTRACCIÓN GLOBAL[/]")
     duration = time.time() - inicio_extraccion

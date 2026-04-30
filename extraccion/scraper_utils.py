@@ -1,3 +1,9 @@
+# En utils.py se encuentran todas las utilidades, es decir funciones modulares que se reutilizan a fin de optimizar las extracciones a traves de RPA. 
+# Se utiliza playwright para la automatización de la navegación, selección de filtros y descarga de los reportes desde SAE Plus.
+# La intención es cumplir con los principios de no repetición, modularidad y claridad. de igual forma se busca que las funciones tengan una 
+# única responsabilidad, es decir que cada función cumpla con una tarea específica y bien definida. 
+# En cada función se encontrara una descripción detallada de su propósito, sus parámetros de entrada y su valor de retorno
+
 import os
 import sys
 import re
@@ -10,12 +16,18 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 from utils import logger_extraccion
+from config import SAE_USUARIO, SAE_CLAVE
 
-def login_sae(page: Page, usuario: str = "JOAPEREZ", clave: str = "Jose304*"):
+#Función principal utilizada en todos los RPA para automatizar el login.
+def login_sae(page: Page, usuario: str = None, clave: str = None): #type: ignore
     """
     Emula la lógica de 'main.txt' en Power Automate.
-    Ingresa al portal SAE y completa el login.
+    Ingresa al portal SAE y completa el login. 
+    Utiliza el usuario y la clave como argumento
     """
+    usuario_final = usuario or SAE_USUARIO
+    clave_final = clave or SAE_CLAVE
+
     print("🔐 [MAIN] Ingresando al portal SAE...")
     page.goto("https://fibex.saeplus.com/")
     
@@ -26,8 +38,8 @@ def login_sae(page: Page, usuario: str = "JOAPEREZ", clave: str = "Jose304*"):
         page.wait_for_timeout(1000) # 1 segundo de pausa antes de escribir
         
         # Volvemos a .fill() por velocidad y limpieza
-        page.locator("input#login_usuario").fill(usuario)
-        page.locator("input#pass_usuario").fill(clave)
+        page.locator("input#login_usuario").fill(usuario_final)
+        page.locator("input#pass_usuario").fill(clave_final)
         
         # Damos clic al botón explícitamente
         page.get_by_role("button", name=" Iniciar Sesión").click()
@@ -46,7 +58,7 @@ def login_sae(page: Page, usuario: str = "JOAPEREZ", clave: str = "Jose304*"):
         
     # Validamos que cargue la página principal antes de seguir
     page.wait_for_selector("a[href='#reportes']", timeout=30000)
-    logger_extraccion.info(f"Autenticación exitosa en SAE para el usuario: {usuario}")
+    logger_extraccion.info(f"Autenticación exitosa en SAE para el usuario: {usuario_final}")
     print("✅ [MAIN] Autenticación completada.")
 
     # --- MANEJO DEL POP-UP DE FACTURACIÓN (Días 1 al 15) ---
@@ -158,9 +170,14 @@ def ejecutar_descarga(page: Page, ruta_destino: str, timeout_ms: int = 300000, s
     print(f"✅ Archivo trasladado y guardado exitosamente en:\n   {ruta_destino}")
     return ruta_destino, download
 
+# Automatizacion de descarga del reporte de listado de llamadas desde SAE PLUS, de sae, la ruta seria:
+# Reportes -> Listado de Llamadas -> Seleccion de tipo de llamada, luego se aplican los filtros de fecha, tipo de respuesta y detalle de respuesta
 def descargar_listado_llamadas(page: Page, fecha_inicial_str: str, fecha_final_str: str, ruta_destino: str, tipo_llamada = None, tipo_respuesta = None, detalle_respuesta = None):
     """
-    Abstrae la navegación, filtrado y descarga del reporte 'Listado De Llamadas'.
+    Automatiza la navegación, filtrado y descarga del reporte 'Listado De Llamadas'.
+    Permite configurar tipo de llamada, tipo de respuesta, detalle de respuesta y aplicar los filtros de fecha.
+    Utiliza selectores robustos y funciones auxiliares para garantizar estabilidad y adaptabilidad a cambios menores en la interfaz de SAE
+    La mayoria de los reportes: Atencion al cliente, Reclamos, Actualizacion de datos, etc... utilizan esta función.
     """
     print("🧭 Navegando al Reporte de Listado De LLamadas...")
     btn_reporte = page.get_by_role("link", name=re.compile(r"Listado De LLamadas", re.IGNORECASE)).first
@@ -201,9 +218,16 @@ def descargar_listado_llamadas(page: Page, fecha_inicial_str: str, fecha_final_s
     
     ejecutar_descarga(page=page, ruta_destino=ruta_destino, seleccionar_todos=True)
 
+#Automatización de descarga del reporte de listado de abonados desde SAE PLUS, de sae, la ruta seria: 
+# Reportes -> Listado de Abonados -> Seleccion de estatus, luego se aplican los filtros de fecha y motivo 
+# (Por defecto se selecciona "Instalación") en el motivo, el cual corresponde a la "Fecha Contrato",
+# para finalmente descargar el reporte con las columnas necesarias. Siempre se pueden recrear los pasos con 
+# playwright codegen o con el page.pause() y la grabación de la consola.
 def listado_abonados(page: Page, fecha_inicial_str: str, fecha_final_str: str, motivo_str: str = None, estatus_list: list = None   ,col_table : list = None): #type: ignore
     """
-    Función especializada para descargar el reporte de Listado de Abonados.
+    Función especializada para automatizar el reporte de Listado de Abonados.
+    El reporte es utilizado para las ventas, churn risk y las dimensiones de cliente.
+    Permite configurar estatus, motivo, columnas específicas y aplicar los filtros de fecha.
     """
     print("Navegando al Listado de Abonados...")
     page.get_by_role("link", name=re.compile(r"Reportes", re.IGNORECASE)).click()
@@ -237,7 +261,7 @@ def listado_abonados(page: Page, fecha_inicial_str: str, fecha_final_str: str, m
     if motivo_str:
         page.locator("#motivo").click()
         page.wait_for_selector("#motivo", state="visible", timeout=60000)
-        page.locator("#motivo").select_option(motivo_str) # type: ignore
+        page.locator("#motivo").select_option(label=re.compile(motivo_str, re.IGNORECASE)) # type: ignore
     else:
         #page.locator("#motivo").click() # Abrimos el dropdown
         page.locator("#motivo").select_option("instalacion") # type: ignore

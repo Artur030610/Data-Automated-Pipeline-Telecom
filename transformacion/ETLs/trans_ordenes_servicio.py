@@ -12,7 +12,8 @@ import polars as pl
 # ==========================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+granparent_dir = os.path.dirname(parent_dir)  # Sube el segundo nivel
+sys.path.append(granparent_dir)
 
 from config import PATHS
 from utils import guardar_parquet, reportar_tiempo, console, limpiar_nulos_powerbi, archivos_raw
@@ -63,10 +64,22 @@ ORDEN_FINAL_GOLD_IDF = [
     "Total_Fallas"
 ]
 
+ORDEN_FINAL_GOLD_IDF_DETALLE_SOLUCION = [
+     "Quincena Evaluada", "Franquicia", "Solucion Aplicada", "Detalle Orden", "Total_Ordenes"
+]
+
 # LA JOYA DE LA CORONA PARA DAX (Stats Granulares)
 ORDEN_SLA_STATS = [
     "Quincena Evaluada", "Franquicia", 
     "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"
+]
+
+# --- LA NUEVA TABLA ÚNICA DE HECHOS PARA POWER BI ---
+ORDEN_FINAL_FACT_TICKETS = [
+    "Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date",
+    "Solucion Aplicada", "Detalle Orden", "Clasificacion", "Grupo Afinidad",
+    "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min",
+    "Duracion_Horas", "Es_Falla", "Cumplio_SLA"
 ]
 
 COLS_INPUT_RAW = [
@@ -247,12 +260,27 @@ def ejecutar():
         # --- C. GOLD IDF ---
         df_gold_idf = df_silver.groupby(
             ["Quincena Evaluada", "FechaFin", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
-            as_index=False
-        ).agg(Total_Fallas=("N° Orden", "nunique"))
+            as_index=False,
+            dropna=False
+        ).agg(Total_Fallas=("N° Orden", "count"))
         df_gold_idf = df_gold_idf.reindex(columns=ORDEN_FINAL_GOLD_IDF)
         guardar_parquet(df_gold_idf, "IDF_Gold.parquet", filas_iniciales=len(df_gold_idf), ruta_destino=ruta_gold)
 
-        # --- D. GOLD SLA-STATS ---
+        # --- D. GOLD IDF DETALLE SOLUCIÓN ---
+        # Llenamos explícitamente los nulos para evitar que el groupby() elimine los tickets abiertos
+        df_prep_sol = df_silver[["Quincena Evaluada", "Franquicia", "Solucion Aplicada", "Detalle Orden", "N° Orden"]].copy()
+        df_prep_sol["Solucion Aplicada"] = df_prep_sol["Solucion Aplicada"].fillna("EN PROCESO / SIN SOLUCIÓN")
+        df_prep_sol["Detalle Orden"] = df_prep_sol["Detalle Orden"].fillna("SIN DETALLE REPORTADO")
+        
+        df_gold_idf_detalle = df_prep_sol.groupby(
+            ["Quincena Evaluada", "Franquicia", "Solucion Aplicada", "Detalle Orden"],
+            as_index=False,
+            dropna=False
+        ).agg(Total_Ordenes=("N° Orden", "count"))
+        df_gold_idf_detalle = df_gold_idf_detalle.reindex(columns=ORDEN_FINAL_GOLD_IDF_DETALLE_SOLUCION)
+        guardar_parquet(df_gold_idf_detalle, "IDF_Gold_Detalle_Solucion.parquet", filas_iniciales=len(df_gold_idf_detalle), ruta_destino=ruta_gold)
+
+        # --- E. GOLD SLA-STATS ---
         console.print("🚀 Generando Gold: SLA-Stats (Precisión absoluta para DAX)...")
         df_gold_stats = df_silver[["Quincena Evaluada", "FechaFin", "Franquicia", "Clasificacion", "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min"]].copy()
         
@@ -270,6 +298,14 @@ def ejecutar():
         
         df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
         guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)
+
+        # --- F. FACT TICKETS GOLD (LA TABLA DEFINITIVA PARA POWER BI) ---
+        console.print("🚀 Generando Gold: Fact_Tickets (Modelo Estrella Optimizado)...")
+        df_fact_tickets = df_silver.copy()
+        # Nos quedamos solo con las columnas de negocio, fechas y métricas, descartando textos pesados
+        df_fact_tickets = df_fact_tickets.reindex(columns=ORDEN_FINAL_FACT_TICKETS)
+        df_fact_tickets["Solucion Aplicada"] = df_fact_tickets["Solucion Aplicada"].fillna("EN PROCESO / SIN SOLUCIÓN")
+        guardar_parquet(df_fact_tickets, "Tickets_Fact_Gold.parquet", filas_iniciales=len(df_fact_tickets), ruta_destino=ruta_gold)
 
         console.print(f"[bold green]✨ Proceso Finalizado. Tickets Reales: {len(df_total):,}[/]")
 

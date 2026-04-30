@@ -102,7 +102,7 @@ def ejecutar():
     archivos_raw = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
     archivos = sorted(
         [f for f in archivos_raw if not os.path.basename(f).startswith("~$")],
-        key=lambda x: obtener_fecha_corte_snapshot(x)[0] if obtener_fecha_corte_snapshot(x)[0] else pd.Timestamp('1900-01-01')
+        key=lambda x: obtener_fecha_corte_snapshot(x)[0] if obtener_fecha_corte_snapshot(x)[0] else pd.Timestamp('1900-01-01') #type: ignore
     )
     
     if not archivos:

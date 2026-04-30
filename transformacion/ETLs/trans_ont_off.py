@@ -68,16 +68,19 @@ def ejecutar():
     #df_atc = df_atc.with_columns(pl.col("Hora").str.to_time("%H:%M:%S"))
     df_atc = df_atc.with_columns(pl.col("Fecha").dt.date())
     # C. QUITAR DUPLICADOS
-    df_total = df_total.unique(subset=["Nombre Franquicia", "Fecha", "Vendedor", "Hora", "N° Abonado"], keep="last")
-
+    
     # D. FILTRAR SOLO ONTs APAGADAS y
     df_atc = df_atc.filter(pl.col("Tipo Respuesta") == "CLIENTE ACTIVO CON ONT APAGADA")
 
     df_final = pl.concat([df_total, df_atc], how="diagonal_relaxed")
+
+    df_final = df_final.unique(subset=["Nombre Franquicia", "Fecha", "Vendedor", "Hora", "N° Abonado"], keep="last")
+    df_final = df_final.unique(subset=["N° Abonado"], keep='first')
     df_final = df_final.select(["N° Abonado", "Documento", "Cliente", "Estatus", 
         "Fecha", "Hora", "Tipo Llamada","Tipo Respuesta", "Detalle Respuesta", 
         "Vendedor", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 
         "Ciudad"])
+    
     df_final.sink_parquet(RUTA_GOLD_COMPLETA, compression="zstd", row_group_size=100000)
     print(df_final.describe())
     
