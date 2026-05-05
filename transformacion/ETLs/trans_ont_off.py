@@ -74,8 +74,7 @@ def ejecutar():
 
     df_final = pl.concat([df_total, df_atc], how="diagonal_relaxed")
 
-    df_final = df_final.unique(subset=["Nombre Franquicia", "Fecha", "Vendedor", "Hora", "N° Abonado"], keep="last")
-    df_final = df_final.unique(subset=["N° Abonado"], keep='first')
+    df_final = df_final.unique(subset=["N° Abonado", "Fecha", "Hora"], keep='last')
     df_final = df_final.select(["N° Abonado", "Documento", "Cliente", "Estatus", 
         "Fecha", "Hora", "Tipo Llamada","Tipo Respuesta", "Detalle Respuesta", 
         "Vendedor", "Suscripción", "Grupo Afinidad", "Nombre Franquicia", 

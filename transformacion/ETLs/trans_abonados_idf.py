@@ -31,13 +31,13 @@ MAPEO_COLUMNAS = {
     "Id": "ID",
     "id": "ID",
     "ID_CLIENTE": "ID",
-    "Estatus contrato": "Estatus contrato",
-    "Estatus": "Estatus contrato"
+    "Estatus contrato": "Estatus",
+    "Estatus": "Estatus"
 }
 
 COLS_ABONADOS_SILVER = [
     "Quincena Evaluada", "FechaInicio", "FechaFin",
-    "ID", "Estatus contrato",
+    "ID", "Estatus",
     "Franquicia" 
 ]
 
@@ -176,7 +176,7 @@ def ejecutar():
                 # Construcción del DataFrame pequeño
                 df_small = pd.DataFrame()
                 df_small["ID"] = df["ID"] if "ID" in df.columns else None
-                df_small["Estatus contrato"] = df["Estatus contrato"] if "Estatus contrato" in df.columns else None
+                df_small["Estatus"] = df["Estatus"] if "Estatus" in df.columns else None
                 df_small["Franquicia"] = df["Franquicia"].fillna("NO DEFINIDA").astype(str).str.strip().str.upper()
                 df_small["Quincena Evaluada"] = quincena_nombre
                 df_small["FechaInicio"] = fecha_inicio
@@ -186,6 +186,14 @@ def ejecutar():
                 col_det = next((c for c in ["Detalle Orden", "Detalle"] if c in df.columns), None)
                 if col_det:
                     df_small = df_small[df[col_det] != "PRUEBA DE INTERNET"]
+
+                # Filtro exclusivo de clientes Activos
+                if "Estatus" in df_small.columns:
+                    df_small = df_small[df_small["Estatus"].astype(str).str.strip().str.upper() == "ACTIVO"]
+                    
+                if df_small.empty:
+                    progress.advance(task)
+                    continue
 
                 dataframes_list.append(df_small[COLS_ABONADOS_SILVER].copy())
                 quincenas_procesadas_hoy.append(quincena_nombre)
@@ -206,7 +214,7 @@ def ejecutar():
         return
 
     console.print(f"\n[cyan]🔄 Fase 2: Uniendo con historial Silver (Upsert)...[/]")
-    df_nuevo_lote = pd.concat(dataframes_list, ignore_index=True).drop_duplicates()
+    df_nuevo_lote = pd.concat(dataframes_list, ignore_index=True).drop_duplicates(subset=["Quincena Evaluada", "ID"], keep="last")
     dataframes_list.clear()
     
     # Limpiamos los nulos del lote nuevo antes de inyectarlo

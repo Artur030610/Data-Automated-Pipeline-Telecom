@@ -4,8 +4,10 @@ import datetime
 import re
 import pandas as pd
 import subprocess
+import shutil
+from rich.prompt import Prompt
 from playwright.sync_api import sync_playwright
-from scraper_utils import login_sae, listado_abonados
+from scraper_utils import login_sae, listado_abonados, transformar_xls
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,16 +23,15 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
     Debido a la naturaleza del reporte, se recomienda usar una fecha inicial muy antigua para obtener todos
     los registros hasta la fecha actual.
     '''
-    today = datetime.datetime.today().strftime('%d/%m/%Y')
     fecha_inicial_str = "01/01/1950" #Aseguramos una fecha muy antigua para que tome todos los registros hasta hoy
 
-    console.print(f"[bold cyan]📊 Iniciando extracción de Abonados ({fecha_inicial_str} - {today})...[/]")
+    console.print(f"[bold cyan]📊 Iniciando extracción de Abonados ({fecha_inicial_str} - {fecha_final_str})...[/]")
     f_ini = datetime.datetime.strptime(fecha_inicial_str, "%d/%m/%Y")
     f_fin = datetime.datetime.strptime(fecha_final_str, "%d/%m/%Y")
     
     nombre_archivo = f"Data - Abonados {f_ini.strftime('%d-%m-%Y')} al {f_fin.strftime('%d-%m-%Y')}.xlsx"
-    
     ruta_destino_dir = str(PATHS.get("raw_clientes"))
+        
     os.makedirs(ruta_destino_dir, exist_ok=True)
     ruta_destino = os.path.join(ruta_destino_dir, nombre_archivo)
     
@@ -45,7 +46,7 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
         col = ["N° Abonado", "Cliente", "Fecha Contrato", "Estatus",
                 "Suscripción","Grupo Afinidad", "Nombre Franquicia",
                 "Ciudad", "Vendedor", "Serv/Paquete"]
-        listado_abonados(page, fecha_inicial_str, today, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
+        listado_abonados(page, fecha_inicial_str, fecha_final_str, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
         
 
         # ================== DESCARGA DIRECTA ==================
@@ -65,21 +66,34 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
         
         print("🔄 Convirtiendo formato nativo de SAE a XLSX puro...")
         try:
-            try:
-                df_descarga = pd.read_html(ruta_temporal, decimal=',', thousands='.')[0]
-            except Exception:
-                df_descarga = pd.read_excel(ruta_temporal, engine="calamine")
-                
-            df_descarga = df_descarga.loc[:, ~df_descarga.columns.str.contains('^Unnamed')]
-            df_descarga.to_excel(ruta_destino, index=False)
+            print("   -> 🔎 Extrayendo datos (Bypass del DOM para ahorrar RAM)...")
+            df_pl = transformar_xls(ruta_temporal)
+            
+            print("   -> 💾 Guardando a XLSX optimizado con Polars...")
+            df_pl.write_excel(ruta_destino)
+            
             os.remove(ruta_temporal)
             print(f"✅ Archivo convertido y guardado exitosamente en:\n   {ruta_destino}")
         except Exception as e:
             print(f"⚠️ Error convirtiendo a XLSX: {e}. Se conservará en el formato original.")
-            download.save_as(ruta_destino)
+            if os.path.exists(ruta_temporal):
+                os.rename(ruta_temporal, ruta_destino)
             
         browser.close()
 
+    console.print("")
+    console.rule("[bold cyan]SNAPSHOT QUINCENAL (IDF)[/]")
+    respuesta = Prompt.ask("[bold yellow]¿Desea guardar una copia de este archivo como snapshot para el cálculo quincenal de IdF?[/] (s/n)", choices=["s", "n"], default="n")
+    
+    if respuesta.lower() == 's':
+        nombre_idf = f"Data - Abonados hasta el {f_fin.strftime('%d-%m-%Y')}.xlsx"
+        ruta_idf_dir = str(PATHS.get("raw_abonados_idf"))
+        os.makedirs(ruta_idf_dir, exist_ok=True)
+        ruta_idf = os.path.join(ruta_idf_dir, nombre_idf)
+        shutil.copy2(ruta_destino, ruta_idf)
+        console.print(f"[bold green]✅ Snapshot copiado exitosamente para IdF:[/]\n   -> {ruta_idf}")
+    else:
+        console.print("[dim]⏭️ Omitiendo guardado de snapshot IdF.[/]")
 
 if __name__ == "__main__":
     descargar_abonados("20/03/2026", "23/03/2026")

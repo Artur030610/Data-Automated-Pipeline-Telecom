@@ -82,7 +82,8 @@ MENU = {
         #scraper_ordenes_servicio.descargar_ordenes_servicio,
         scraper_comebackhome.descargar_comebackhome,
         scraper_empleados.descargar_empleados,
-        scraper_ont_off.descargar_ont_off
+        scraper_ont_off.descargar_ont_off,
+        scraper_abonados.descargar_abonados
     ]},
     "2":  {"icono": "💰", "label": "RECAUDACIÓN Y HORAS DE PAGO", "target": scraper_recaudacion.descargar_recaudacion_y_horas},
     "3":  {"icono": "👥", "label": "VENTAS LISTADO DE ABONADOS", "target": scraper_ventas.descargar_ventas},
@@ -97,7 +98,7 @@ MENU = {
     "12": {"icono": "🎧", "label": "ESTADÍSTICA DE ABONADOS", "target": scraper_estadisticas_abonados.descargar_estadisticas_abonados},
     "13": {"icono": "📈", "label": "CHURN RISK", "target": scraper_churn_risk.descargar_churn_risk},
     "14": {"icono": "📜", "label": "ONTs APAGADAS", "target": scraper_ont_off.descargar_ont_off},
-    
+    "15": {"icono": "👥", "label": "ABONADOS", "target": scraper_abonados.descargar_abonados}
 }
 
 def mostrar_menu():

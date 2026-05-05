@@ -93,7 +93,7 @@ def procesar_reclamos_general():
     if 'Fecha_Modificacion_Archivo' in df_final.columns:
         df_final = df_final.sort_values(by='Fecha_Modificacion_Archivo', ascending=True)
         
-    df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Origen"], keep='last')
+    df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada"], keep='last')
     
     if 'Fecha_Modificacion_Archivo' in df_final.columns:
         df_final = df_final.drop(columns=['Fecha_Modificacion_Archivo'])
@@ -245,7 +245,7 @@ def procesar_fallas_banco():
         if 'Fecha_Modificacion_Archivo' in df_final.columns:
             df_final = df_final.sort_values(by='Fecha_Modificacion_Archivo', ascending=True)
             
-        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada", "Detalle Respuesta"], keep='last')
+        df_final = df_final.drop_duplicates(subset=["N° Abonado", "Fecha Llamada", "Hora Llamada"], keep='last')
         
         if 'Fecha_Modificacion_Archivo' in df_final.columns:
             df_final = df_final.drop(columns=['Fecha_Modificacion_Archivo'])

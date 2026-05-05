@@ -6,6 +6,7 @@ from rich.prompt import Prompt
 from config import THEME_COLOR
 import time 
 from utils import tiempo, audit_performance, liberar_ram_os
+from notificaciones import enviar_notificacion_bot
 
 # ========================================================
 # 1. IMPORTACIÓN DE MÓDULOS (ETLs)
@@ -28,7 +29,7 @@ from transformacion.ETLs import (
     trans_recaudacion,
     trans_reclamos,
     trans_ventase,            # 1. Financiero
-    trans_ventas                 # 2. Comercial           # 1. Denominador (Stock de Clientes)        # 3. El Puente (Dimensión),
+    trans_ventas              # 2. Comercial           # 1. Denominador (Stock de Clientes)        # 3. El Puente (Dimensión),
     # --- TRANSFORMACIONES & DW ---
 )
 
@@ -167,7 +168,13 @@ def main():
         ejecutar_wrapper(seleccion['target']) 
     
     console.rule("[bold green] FIN DE EJECUCIÓN GLOBAL[/]")
+    duracion = time.time() - inicio_transformacion
     tiempo(inicio_transformacion)
+    
+    enviar_notificacion_bot(
+        mensaje=f"✅ *Transformación (ETLs) Completada*\n⚙️ Proceso: {seleccion['label'] if seleccion else 'Desconocido'}\n⏱️ Tiempo Total: {duracion/60:.2f} minutos",
+        plataforma="telegram"
+    )
 
 if __name__ == "__main__":
     main()

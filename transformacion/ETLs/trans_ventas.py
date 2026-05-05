@@ -136,7 +136,7 @@ def ejecutar():
             
         # Último seguro contra duplicados por clave de negocio
         df_final = df_final.drop_duplicates(
-            subset=["N° Abonado", "Fecha Contrato", "Vendedor", "Ciudad"], 
+            subset=["N° Abonado", "Fecha Contrato"], 
             keep='last'
         )
         

@@ -7,8 +7,10 @@
 import os
 import sys
 import re
+import polars as pl
 from playwright.sync_api import Page, Locator
 from typing import Union
+from html.parser import HTMLParser
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -307,3 +309,62 @@ def listado_abonados(page: Page, fecha_inicial_str: str, fecha_final_str: str, m
             page.wait_for_timeout(3000)
     except Exception as e:
         print(f"⚠️ Aviso al configurar columnas: {e}")
+
+
+# =========================================================================
+# CLASE Y FUNCIÓN PARA PARSEAR HTML MASIVO CON BAJO CONSUMO DE RAM
+# =========================================================================
+class SAETableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_cell = False
+        self.current_row = []
+        self.data = []
+        self.current_cell = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'tr':
+            self.current_row = []
+        elif tag in ('td', 'th'):
+            self.in_cell = True
+            self.current_cell = []
+
+    def handle_data(self, data):
+        if self.in_cell:
+            self.current_cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in ('td', 'th'):
+            self.in_cell = False
+            texto = "".join(self.current_cell).replace('&nbsp;', ' ').strip()
+            self.current_row.append(texto)
+        elif tag == 'tr':
+            if self.current_row and any(self.current_row):
+                self.data.append(self.current_row)
+
+def transformar_xls(ruta_archivo):
+    """Lee un archivo HTML gigante disfrazado de XLS y lo convierte a Polars DataFrame usando Eventos (SAX-like)."""
+    print("   -> 🔎 Analizando estructura mediante Eventos HTML (Sin DOM)...")
+    parser = SAETableParser()
+    
+    with open(ruta_archivo, 'r', encoding='latin1', errors='ignore') as f:
+        parser.feed(f.read())
+        
+    datos = parser.data
+    print(f"   -> ✅ Se extrajeron {len(datos)} filas. Pasando a Polars...")
+    
+    if len(datos) <= 1:
+        return pl.DataFrame(datos, orient="row")
+        
+    cols_unicas = []
+    for i, c in enumerate(datos[0]):
+        nom = c if c else f"Col_{i}"
+        if nom in cols_unicas: nom = f"{nom}_{i}"
+        cols_unicas.append(nom)
+        
+    num_cols = len(cols_unicas)
+    datos_norm = [f[:num_cols] if len(f) > num_cols else f + [""]*(num_cols-len(f)) for f in datos[1:]]
+    
+    df_pl = pl.DataFrame(datos_norm, schema=cols_unicas, orient="row")
+    cols_validas = [c for c in df_pl.columns if not c.startswith("Col_") and "Unnamed" not in c]
+    return df_pl.select(cols_validas)

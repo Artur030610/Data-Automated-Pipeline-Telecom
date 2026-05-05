@@ -113,7 +113,7 @@ def ejecutar():
         select_sql = ",\n".join(select_exprs)
         
         # Columnas dinámicas para particionar la deduplicación
-        cols_dedupe = ["N° Abonado", "Documento", "Saldo", "Fecha Llamada", "Hora", "Tipo Respuesta"]
+        cols_dedupe = ["N° Abonado", "Fecha Llamada", "Hora"]
         part_cols = ", ".join([f'"{c}"' for c in cols_dedupe if c in schema_info or c == "Hora"])
         
         query = f"""

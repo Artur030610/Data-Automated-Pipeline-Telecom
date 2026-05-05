@@ -83,6 +83,31 @@ def ejecutar():
             df_temp["Detalle Respuesta"] = df_temp["Detalle Respuesta"].fillna(df_temp.get("Observacion"))
             df_temp["Detalle Respuesta"] = df_temp["Detalle Respuesta"].fillna(df_temp.get("Asunto"))
             
+            # --- NUEVA LÓGICA DE CATEGORIZACIÓN (TEXTO LIBRE) ---
+            texto_libre = df_temp["Detalle Respuesta"].fillna("").astype(str).str.upper()
+            
+            condiciones = [
+                texto_libre.str.contains(r"TEL[EÉ]FONO|CELULAR|N[UÚ]MERO|TLF", regex=True),
+                texto_libre.str.contains(r"CORREO|EMAIL|MAIL", regex=True),
+                texto_libre.str.contains(r"C[EÉ]DULA|DOCUMENTO|C\.I|IDENTIDAD|RIF", regex=True),
+                texto_libre.str.contains(r"DIRECCI[OÓ]N|UBICACI[OÓ]N|CASA|CALLE|AVENIDA", regex=True),
+                texto_libre.str.contains(r"NOMBRE|APELLIDO|TITULAR", regex=True),
+                texto_libre.str.contains(r"CLAVE|CONTRASE[ÑN]A|PASSWORD|WIFI", regex=True),
+                texto_libre.str.contains(r"PLAN|SERVICIO|PAQUETE|MEGAS|VELOCIDAD", regex=True)
+            ]
+            
+            opciones = [
+                "TELEFONO",
+                "CORREO ELECTRÓNICO",
+                "CEDULA",
+                "DIRECCION",
+                "NOMBRE Y APELLIDO",
+                "CLAVE / WIFI",
+                "CAMBIO DE PLAN"
+            ]
+            
+            df_temp["Detalle Respuesta"] = np.select(condiciones, opciones, default="OTRAS ACTUALIZACIONES")
+
             if "Tipo Respuesta" not in df_temp.columns:
                 df_temp["Tipo Respuesta"] = "GESTION INTERNA / OBS" 
 
@@ -139,7 +164,7 @@ def ejecutar():
     if 'fecha_mod_archivo' in df_total.columns:
         df_total = df_total.sort_values(by='fecha_mod_archivo', ascending=True)
         
-    subset_duplicados = ["N° Abonado", "Fecha", "Hora", "Detalle Respuesta", "Responsable"]
+    subset_duplicados = ["N° Abonado", "Fecha", "Hora"]
     df_final = df_total.drop_duplicates(subset=subset_duplicados, keep='last')
     
     if 'fecha_mod_archivo' in df_final.columns:

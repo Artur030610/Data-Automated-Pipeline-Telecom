@@ -115,7 +115,7 @@ def ejecutar():
         df_final = utils.standard_hours(df_final, 'Hora')
 
         # 3. DEDUPLICACIÓN ESTRICTA
-        subset_dedup = ["N° Abonado", "Documento", "Hora", "Fecha", "Vendedor"]
+        subset_dedup = ["N° Abonado", "Fecha", "Hora"]
         df_final = df_final.drop_duplicates(subset=subset_dedup, keep='last')
         
         #  ELIMINAMOS LA COLUMNA FANTASMA (Hizo su trabajo y no sale)

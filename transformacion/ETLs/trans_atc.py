@@ -102,8 +102,7 @@ def ejecutar():
     # 5. DEDUPLICACIÓN GLOBAL
     # ---------------------------------------------------------
     subset_final = [
-        "N° Abonado", "Documento", "Fecha", "Hora", 
-        "Tipo Respuesta", "Detalle Respuesta", "Vendedor"
+        "N° Abonado", "Fecha", "Hora"
     ]
     df_final = df_total.drop_duplicates(subset=subset_final, keep='last').copy()
     

@@ -109,7 +109,7 @@ def ejecutar():
     df_total = df_total.sort_values(by="Fecha", ascending=False)
 
     # Deduplicación Final (Keep First sobre orden descendente prioriza la data de la tarde)
-    subset_dedupe = ["N° Abonado", "Documento", "Fecha", "Hora", "Tipo Respuesta", "Responsable"]
+    subset_dedupe = ["N° Abonado", "Fecha", "Hora"]
     subset_dedupe = [c for c in subset_dedupe if c in df_total.columns]
     
     df_final = df_total.drop_duplicates(subset=subset_dedupe, keep='first')

@@ -27,6 +27,19 @@ ruta_bronze = PATHS.get("bronze","data/bronze")
 # ==========================================
 HORAS_SLA_META = 24.0
 
+# --- CLASIFICACIÓN POR NATURALEZA DE LA SOLUCIÓN ---
+SOLUCIONES_LOGICAS_NOC = [
+    "RESETEO", "CONFIGURACION", "CONFIGURACIÓN", "SOPORTE REMOTO", "REINICIO", 
+    "ACTUALIZACION", "PROVISIONAMIENTO", "APROVISIONAMIENTO", "LIBERACION", 
+    "MAC", "IP", "VERIFICACION", "SISTEMA"
+]
+
+SOLUCIONES_FISICAS_OP = [
+    "CAMBIO DE EQUIPO", "CAMBIO DE ONT", "CONECTOR", "CABLE", "FIBRA", 
+    "CORTE", "VISITA", "EMPALME", "REPARACION", "REINSTALACION", 
+    "MANTENIMIENTO FISICO", "MUDANZA", "ROUTER"
+]
+
 NOC_USERS = [
     "GFARFAN", "JVELASQUEZ", "JOLUGO", "KUSEA", "SLOPEZ",
     "EDESPINOZA", "SANDYJIM", "JOCASTILLO", "JESUSGARCIA",
@@ -216,11 +229,27 @@ def ejecutar():
         # Tu clasificación NOC/Operaciones
         df_total['Grupo_Norm'] = df_total['Grupo Trabajo'].fillna('').astype(str).str.upper()
         df_total['Usuario_Norm'] = df_total['Usuario Final'].fillna('').astype(str).str.upper()
+        df_total['Solucion_Norm'] = df_total['Solucion Aplicada'].fillna('').astype(str).str.upper()
+        
+        patron_logico = '|'.join(SOLUCIONES_LOGICAS_NOC)
+        patron_fisico = '|'.join(SOLUCIONES_FISICAS_OP)
+        
         condiciones = [
             df_total['Usuario_Norm'].isin(NOC_USERS), df_total['Grupo_Norm'].isin(NOC_USERS),
             df_total['Usuario_Norm'].str.contains('NOC', na=False), df_total['Grupo_Norm'].str.contains('OPERACIONES', na=False)
+            # 1. Prioridad Absoluta: Naturaleza de la Solución (Lógica vs Física)
+            df_total['Solucion_Norm'].str.contains(patron_logico, regex=True, na=False),
+            df_total['Solucion_Norm'].str.contains(patron_fisico, regex=True, na=False),
+            # 2. Fallback: Si la solución está en blanco o es ambigua, usamos al Usuario/Grupo
+            df_total['Usuario_Norm'].isin(NOC_USERS), 
+            df_total['Grupo_Norm'].isin(NOC_USERS),
+            df_total['Usuario_Norm'].str.contains('NOC', na=False), 
+            df_total['Grupo_Norm'].str.contains('OPERACIONES', na=False)
         ]
         df_total['Clasificacion'] = np.select(condiciones, ['NOC', 'NOC', 'NOC', 'OPERACIONES'], default='MESA DE CONTROL')
+        
+        opciones = ['NOC', 'OPERACIONES', 'NOC', 'NOC', 'NOC', 'OPERACIONES']
+        df_total['Clasificacion'] = np.select(condiciones, opciones, default='MESA DE CONTROL')
 
         # Tu lógica de KPIs
         for c in ['Fecha Cierre', 'Fecha Apertura', 'Fecha Impresion']:
@@ -233,6 +262,19 @@ def ejecutar():
         df_total['SLA Despacho Min']   = ((df_total['Fecha Cierre'] - df_total['Fecha Impresion']).dt.total_seconds() / 60).round(2).clip(lower=0)
         df_total['SLA Impresion Min']  = ((df_total['Fecha Impresion'] - df_total['Fecha Apertura']).dt.total_seconds() / 60).round(2).clip(lower=0)
         
+        # --- FIX NOC VS CALLE (COHERENCIA MATEMÁTICA GLOBAL) ---
+        # Si nunca se imprimió (remoto), Despacho es 0 y Mesa de Control hereda el 100%
+        mask_no_impreso = df_total['Fecha Impresion'].isna()
+        df_total.loc[mask_no_impreso, 'SLA Despacho Min'] = 0
+        df_total.loc[mask_no_impreso, 'SLA Impresion Min'] = df_total.loc[mask_no_impreso, 'SLA Resolucion Min']
+        
+        df_total['SLA Despacho Min'] = df_total['SLA Despacho Min'].fillna(0)
+        df_total['SLA Impresion Min'] = df_total['SLA Impresion Min'].fillna(0)
+        
+        # Blindaje absoluto: Impresion + Despacho NUNCA sumarán más que Resolución
+        df_total['SLA Despacho Min'] = df_total[['SLA Despacho Min', 'SLA Resolucion Min']].min(axis=1)
+        df_total['SLA Impresion Min'] = df_total['SLA Resolucion Min'] - df_total['SLA Despacho Min']
+
         df_total['Fecha Apertura Date'] = df_total['Fecha Apertura'].dt.normalize()
         df_total['Fecha Cierre Date'] = df_total['Fecha Cierre'].dt.normalize()
         df_total['Duracion_Horas'] = df_total['SLA Resolucion Min'] / 60
@@ -240,9 +282,16 @@ def ejecutar():
         
         df_total['Cumplio_SLA'] = np.where((df_total['Duracion_Horas'] > 0) & (df_total['Duracion_Horas'] <= HORAS_SLA_META), 1, 0)
 
-        # Tu Deduplicación Blindada
+        # --- FIX: Normalización de IDs ---
+        # Polars puede leer números de Excel como "12345.0", lo que rompe la deduplicación
+        for col in ["N° Orden", "N° Contrato"]:
+            if col in df_total.columns:
+                df_total[col] = df_total[col].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+
+        # Tu Deduplicación Blindada (Aislada por Quincena)
+        # CRÍTICO: Se incluye "Quincena Evaluada" para permitir que un ticket viva en Q1 (Backlog) y en Q2 (Cerrado)
         df_total = df_total.sort_values(by=["Fecha Cierre"], na_position='first').drop_duplicates(
-            subset=["N° Orden", "Fecha Apertura", "N° Contrato", "Detalle Orden"], keep="last"
+            subset=["Quincena Evaluada", "N° Orden"], keep="last"
         )
         
         df_total = limpiar_nulos_powerbi(df_total)
@@ -290,11 +339,6 @@ def ejecutar():
         df_gold_stats = df_gold_stats[df_gold_stats['SLA Resolucion Min'] > 0]
         
         df_gold_stats['SLA Resolucion Min'] = df_gold_stats['SLA Resolucion Min'].clip(lower=1)
-        df_gold_stats['SLA Impresion Min']  = df_gold_stats['SLA Impresion Min'].fillna(0).clip(lower=0)
-        
-        # Garantizamos la coherencia matemática: Impresión + Despacho = Resolución
-        df_gold_stats['SLA Impresion Min']  = df_gold_stats[['SLA Impresion Min', 'SLA Resolucion Min']].min(axis=1)
-        df_gold_stats['SLA Despacho Min']   = df_gold_stats['SLA Resolucion Min'] - df_gold_stats['SLA Impresion Min']
         
         df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
         guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)
