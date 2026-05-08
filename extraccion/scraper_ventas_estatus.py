@@ -42,7 +42,6 @@ def descargar_ventas_estatus(fecha_inicial_str: str, fecha_final_str: str):
         # Configuramos el contexto para aceptar descargas automáticamente
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
-        
         # ================== MAIN.TXT (LOGIN) ==================
         login_sae(page)
 

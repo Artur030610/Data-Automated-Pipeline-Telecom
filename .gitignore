@@ -39,3 +39,6 @@ logs/dbt.log
 # --- SISTEMA ---
 .DS_Store
 Thumbs.db
+transformacion/ETLs/bootstrapping_sla.py
+transformacion/ETLs/ordenes_servicio.py
+transformacion/ETLs/investigar_abril.py

@@ -29,27 +29,40 @@ HORAS_SLA_META = 24.0
 
 # --- CLASIFICACIÓN POR NATURALEZA DE LA SOLUCIÓN ---
 SOLUCIONES_LOGICAS_NOC = [
-    "RESETEO", "CONFIGURACION", "CONFIGURACIÓN", "SOPORTE REMOTO", "REINICIO", 
-    "ACTUALIZACION", "PROVISIONAMIENTO", "APROVISIONAMIENTO", "LIBERACION", 
-    "MAC", "IP", "VERIFICACION", "SISTEMA"
+    "RESETEO", "CONFIGURACION", "CONFIGURACIÓN", "SOPORTE REMOTO", "REINICIO", "REINICIAR",
+    "ACTUALIZACION", "ACTUALIZACIÓN", "PROVISIONAMIENTO", "APROVISIONAMIENTO", "LIBERACION", 
+    "MAC", "IP", "VERIFICACION", "SISTEMA", "APP", "SMART", "FIBEXPLAY", "FIBEX PLAY", 
+    "CREDENCIALES", "ENRUTAMIENTO", "OLT", "DESCONECTADO", "SOLVENTADA", "DHCP", "WIFI DESACTIVADO", 
+    "VLAN", "FRECUENCIA", "DNS", "ISP", "DFS", "CANALES", "SOFTWARE", "VERSION", 
+    "AUDIO", "VIDEO", "SATURACION", "LIMITACION", "ASESORAMIENTO"
 ]
 
 SOLUCIONES_FISICAS_OP = [
-    "CAMBIO DE EQUIPO", "CAMBIO DE ONT", "CONECTOR", "CABLE", "FIBRA", 
-    "CORTE", "VISITA", "EMPALME", "REPARACION", "REINSTALACION", 
-    "MANTENIMIENTO FISICO", "MUDANZA", "ROUTER"
+    "CAMBIO DE EQUIPO", "CAMBIO DE ONT", "CONECTOR", "CABLE", "FIBRA", "FALLA EN LA RED INTERNA",
+    "CORTE", "VISITA", "EMPALME", "REPARACION", "REINSTALACION", "REINSTALACIÓN",
+    "MANTENIMIENTO FISICO", "MUDANZA", "ROUTER", "CAJA", "ANTENA", "ACOPLE", 
+    "ATENUACION", "ATENUACIÓN", "PATCHCORD", "DAÑADO", "UPGRADE", "FALLA LOS", 
+    "REUBICACION", "REUBICACIÓN", "EQUIPO APAGADO", "EQUIPO DAÑADO"
 ]
+
+
+SOLUCIONES_ADMINISTRATIVAS = [
+    "CLIENTE SOLICITO REEMBOLSO", "CONSULTA DE SALDO",
+    "PAGO CRUZADO", "PAGO RECHAZADO", "PAGO CONCILIADO", "PAGO REGISTRADO", "PAGO DUPLICADO",
+    "NOTA CRÉDITO DIFERENCIAL CAMBIARIO", "CLIENTE NO CONTESTA"
+]
+
 
 NOC_USERS = [
     "GFARFAN", "JVELASQUEZ", "JOLUGO", "KUSEA", "SLOPEZ",
     "EDESPINOZA", "SANDYJIM", "JOCASTILLO", "JESUSGARCIA",
     "DFUENTES", "JOCANTO", "IXMONTILLA", "OMTRUJILLO",
-    "LLZERPA", "LUIJIMENEZ"
+    "LLZERPA", "LUIJIMENEZ","NSANTANA","WILLMARTINEZ",
+    "DOURODRIGUEZ"
 ]
 
 EXCLUIR_SOLUCIONES = [
-    "CAMBIO DE CLAVE", "CLIENTE SOLICITO REEMBOLSO", 
-    "LLAMADAS DE AGENDAMIENTO", "ORDEN REPETIDA", "CONSULTA DE SALDO", "ORDEN MAL GENERADA",
+    "LLAMADAS DE AGENDAMIENTO", "ORDEN REPETIDA", "ORDEN MAL GENERADA", "CAMBIO DE CLAVE"
 ]
 
 # ==========================================
@@ -90,9 +103,10 @@ ORDEN_SLA_STATS = [
 # --- LA NUEVA TABLA ÚNICA DE HECHOS PARA POWER BI ---
 ORDEN_FINAL_FACT_TICKETS = [
     "Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date",
+    "N° Orden", "N° Contrato",
     "Solucion Aplicada", "Detalle Orden", "Clasificacion", "Grupo Afinidad",
     "SLA Resolucion Min", "SLA Despacho Min", "SLA Impresion Min",
-    "Duracion_Horas", "Es_Falla", "Cumplio_SLA"
+    "Cumplio_SLA", "Duracion_Horas", "Es_Falla"
 ]
 
 COLS_INPUT_RAW = [
@@ -160,7 +174,7 @@ def ejecutar():
         if not fecha_inicio: continue
 
         try:
-            # 🚀 OPTIMIZACIÓN RAM: Polars lee el Excel en C++ (mucho más ligero)
+            # OPTIMIZACIÓN RAM: Polars lee el Excel en C++ (mucho más ligero)
             # y lo convierte a Pandas usando PyArrow. Esto evita el pico de RAM de pd.read_excel.
             df = pl.read_excel(archivo, engine="calamine", infer_schema_length=0).to_pandas(use_pyarrow_extension_array=True)
             
@@ -231,25 +245,23 @@ def ejecutar():
         df_total['Usuario_Norm'] = df_total['Usuario Final'].fillna('').astype(str).str.upper()
         df_total['Solucion_Norm'] = df_total['Solucion Aplicada'].fillna('').astype(str).str.upper()
         
+        patron_admin  = '|'.join(SOLUCIONES_ADMINISTRATIVAS)
         patron_logico = '|'.join(SOLUCIONES_LOGICAS_NOC)
         patron_fisico = '|'.join(SOLUCIONES_FISICAS_OP)
         
+        # Evaluamos las condiciones en orden de prioridad estricto
         condiciones = [
-            df_total['Usuario_Norm'].isin(NOC_USERS), df_total['Grupo_Norm'].isin(NOC_USERS),
-            df_total['Usuario_Norm'].str.contains('NOC', na=False), df_total['Grupo_Norm'].str.contains('OPERACIONES', na=False)
-            # 1. Prioridad Absoluta: Naturaleza de la Solución (Lógica vs Física)
-            df_total['Solucion_Norm'].str.contains(patron_logico, regex=True, na=False),
-            df_total['Solucion_Norm'].str.contains(patron_fisico, regex=True, na=False),
-            # 2. Fallback: Si la solución está en blanco o es ambigua, usamos al Usuario/Grupo
+            df_total['Solucion_Norm'].str.contains(patron_admin, regex=True, na=False),
             df_total['Usuario_Norm'].isin(NOC_USERS), 
             df_total['Grupo_Norm'].isin(NOC_USERS),
             df_total['Usuario_Norm'].str.contains('NOC', na=False), 
-            df_total['Grupo_Norm'].str.contains('OPERACIONES', na=False)
+            df_total['Grupo_Norm'].str.contains('OPERACIONES|MESA DE CONTROL', na=False),
+            df_total['Solucion_Norm'].str.contains(patron_fisico, regex=True, na=False),
+            df_total['Solucion_Norm'].str.contains(patron_logico, regex=True, na=False)
         ]
-        df_total['Clasificacion'] = np.select(condiciones, ['NOC', 'NOC', 'NOC', 'OPERACIONES'], default='MESA DE CONTROL')
         
-        opciones = ['NOC', 'OPERACIONES', 'NOC', 'NOC', 'NOC', 'OPERACIONES']
-        df_total['Clasificacion'] = np.select(condiciones, opciones, default='MESA DE CONTROL')
+        opciones = ['ADMINISTRATIVO', 'NOC', 'NOC', 'NOC', 'OPERACIONES', 'OPERACIONES', 'NOC']
+        df_total['Clasificacion'] = np.select(condiciones, opciones, default='N/S')
 
         # Tu lógica de KPIs
         for c in ['Fecha Cierre', 'Fecha Apertura', 'Fecha Impresion']:
@@ -262,23 +274,37 @@ def ejecutar():
         df_total['SLA Despacho Min']   = ((df_total['Fecha Cierre'] - df_total['Fecha Impresion']).dt.total_seconds() / 60).round(2).clip(lower=0)
         df_total['SLA Impresion Min']  = ((df_total['Fecha Impresion'] - df_total['Fecha Apertura']).dt.total_seconds() / 60).round(2).clip(lower=0)
         
-        # --- FIX NOC VS CALLE (COHERENCIA MATEMÁTICA GLOBAL) ---
-        # Si nunca se imprimió (remoto), Despacho es 0 y Mesa de Control hereda el 100%
+        # --- FIX NOC VS CALLE (VECTORIZADO PARA EVITAR BUG DE PYARROW) ---
+        mask_cerrado = df_total['Fecha Cierre'].notna()
         mask_no_impreso = df_total['Fecha Impresion'].isna()
-        df_total.loc[mask_no_impreso, 'SLA Despacho Min'] = 0
-        df_total.loc[mask_no_impreso, 'SLA Impresion Min'] = df_total.loc[mask_no_impreso, 'SLA Resolucion Min']
+        mask_remoto = mask_cerrado & mask_no_impreso
         
-        df_total['SLA Despacho Min'] = df_total['SLA Despacho Min'].fillna(0)
-        df_total['SLA Impresion Min'] = df_total['SLA Impresion Min'].fillna(0)
+        # Extraemos los cálculos base
+        sla_res = df_total['SLA Resolucion Min']
+        sla_des = df_total['SLA Despacho Min']
+        sla_imp = df_total['SLA Impresion Min']
+
+        # Llenamos nulos temporalmente solo para las matemáticas de los tickets cerrados
+        sla_res_cerrado = np.where(mask_cerrado, sla_res.fillna(0), sla_res)
+        sla_des_cerrado = np.where(mask_cerrado, sla_des.fillna(0), sla_des)
+
+        # 1. Para tickets remotos cerrados, despacho es 0
+        sla_des_cerrado = np.where(mask_remoto, 0.0, sla_des_cerrado)
+
+        # 2. Blindaje para cerrados: Despacho no supera Resolución
+        sla_des_final = np.where(mask_cerrado, np.minimum(sla_des_cerrado, sla_res_cerrado), sla_des)
         
-        # Blindaje absoluto: Impresion + Despacho NUNCA sumarán más que Resolución
-        df_total['SLA Despacho Min'] = df_total[['SLA Despacho Min', 'SLA Resolucion Min']].min(axis=1)
-        df_total['SLA Impresion Min'] = df_total['SLA Resolucion Min'] - df_total['SLA Despacho Min']
+        # 3. Impresión para cerrados = Res - Despacho. Para abiertos se mantiene intacto.
+        sla_imp_final = np.where(mask_cerrado, sla_res_cerrado - sla_des_final, sla_imp)
+
+        # Asignamos de vuelta de forma segura a las columnas de Power BI
+        df_total['SLA Despacho Min'] = sla_des_final
+        df_total['SLA Impresion Min'] = sla_imp_final
 
         df_total['Fecha Apertura Date'] = df_total['Fecha Apertura'].dt.normalize()
         df_total['Fecha Cierre Date'] = df_total['Fecha Cierre'].dt.normalize()
         df_total['Duracion_Horas'] = df_total['SLA Resolucion Min'] / 60
-        df_total['Es_Falla'] = 1 
+        df_total['Es_Falla'] = np.where(df_total['Clasificacion'] == 'ADMINISTRATIVO', 0, 1)
         
         df_total['Cumplio_SLA'] = np.where((df_total['Duracion_Horas'] > 0) & (df_total['Duracion_Horas'] <= HORAS_SLA_META), 1, 0)
 
@@ -308,16 +334,16 @@ def ejecutar():
 
         # --- C. GOLD IDF ---
         df_gold_idf = df_silver.groupby(
-            ["Quincena Evaluada", "FechaFin", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
+            ["Quincena Evaluada", "Franquicia", "Fecha Apertura Date", "Fecha Cierre Date"],
             as_index=False,
             dropna=False
-        ).agg(Total_Fallas=("N° Orden", "count"))
+        ).agg(Total_Fallas=("N° Orden", "nunique"))
         df_gold_idf = df_gold_idf.reindex(columns=ORDEN_FINAL_GOLD_IDF)
         guardar_parquet(df_gold_idf, "IDF_Gold.parquet", filas_iniciales=len(df_gold_idf), ruta_destino=ruta_gold)
 
         # --- D. GOLD IDF DETALLE SOLUCIÓN ---
         # Llenamos explícitamente los nulos para evitar que el groupby() elimine los tickets abiertos
-        df_prep_sol = df_silver[["Quincena Evaluada", "Franquicia", "Solucion Aplicada", "Detalle Orden", "N° Orden"]].copy()
+        df_prep_sol = df_silver[df_silver["Es_Falla"] == 1][["Quincena Evaluada", "Franquicia", "Solucion Aplicada", "Detalle Orden", "N° Orden"]].copy()
         df_prep_sol["Solucion Aplicada"] = df_prep_sol["Solucion Aplicada"].fillna("EN PROCESO / SIN SOLUCIÓN")
         df_prep_sol["Detalle Orden"] = df_prep_sol["Detalle Orden"].fillna("SIN DETALLE REPORTADO")
         
@@ -335,10 +361,10 @@ def ejecutar():
         
         df_gold_stats = df_gold_stats.dropna(subset=['SLA Resolucion Min'])
         
-        # FIX ABSOLUTO: Filtrar y blindar para que SLA-Stats sea idéntico al SLA Normal
-        df_gold_stats = df_gold_stats[df_gold_stats['SLA Resolucion Min'] > 0]
+        # # FIX ABSOLUTO: Filtrar y blindar para que SLA-Stats sea idéntico al SLA Normal
+        # df_gold_stats = df_gold_stats[df_gold_stats['SLA Resolucion Min'] > 0]
         
-        df_gold_stats['SLA Resolucion Min'] = df_gold_stats['SLA Resolucion Min'].clip(lower=1)
+        # df_gold_stats['SLA Resolucion Min'] = df_gold_stats['SLA Resolucion Min'].clip(lower=1)
         
         df_gold_stats = df_gold_stats.reindex(columns=ORDEN_SLA_STATS)
         guardar_parquet(df_gold_stats, "SLA_GOLD_STATS.parquet", filas_iniciales=len(df_gold_stats), ruta_destino=ruta_gold)
