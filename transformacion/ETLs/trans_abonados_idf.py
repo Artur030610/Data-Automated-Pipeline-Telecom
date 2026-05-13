@@ -13,7 +13,8 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeEl
 # --- CONFIGURACIÓN DE RUTAS ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+grandparent_dir = os.path.dirname(parent_dir)  # Sube el segundo nivel
+sys.path.append(grandparent_dir)
 
 from config import PATHS
 from utils import (
@@ -91,15 +92,12 @@ def ejecutar():
     console.rule("[bold cyan]📊 PIPELINE: ABONADOS (INCREMENTAL CRONOLÓGICO ULTRA-RÁPIDO)[/]")
 
     ruta_origen = PATHS.get("raw_abonados_idf")
-    if not ruta_origen or not os.path.exists(ruta_origen):
-        ruta_origen = r"C:\Users\josperez\Documents\A-DataStack\01-Proyectos\01-Data_PipelinesFibex\02_Data_Lake\raw_data\5-Indice de falla\2-Abonados"
     
-    if not os.path.exists(ruta_origen):
-        console.print(f"[red]❌ Error: No se encuentra la ruta: {ruta_origen}[/]")
-        return
+    if ruta_origen and not os.path.exists(ruta_origen):
+        os.makedirs(ruta_origen, exist_ok=True)
 
     # --- FIX CRONOLÓGICO: Ordenamos por la FECHA REAL del archivo, no por el nombre ---
-    archivos_raw = glob.glob(os.path.join(ruta_origen, "*.xlsx"))
+    archivos_raw = glob.glob(os.path.join(ruta_origen, "*.xlsx")) #type: ignore
     archivos = sorted(
         [f for f in archivos_raw if not os.path.basename(f).startswith("~$")],
         key=lambda x: obtener_fecha_corte_snapshot(x)[0] if obtener_fecha_corte_snapshot(x)[0] else pd.Timestamp('1900-01-01') #type: ignore
