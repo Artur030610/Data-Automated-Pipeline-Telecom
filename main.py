@@ -97,14 +97,18 @@ def ejecutar_wrapper(modulo):
 # ========================================================
 MENU = {
     "1":  {"icono": "🚀", "label": "EJECUTAR TODO (Full Data Warehouse)", "target": [
-        # FASE 1: INGESTA BASE
-        trans_recaudacion, trans_ventas, trans_ventase, trans_reclamos, trans_atc, trans_ont_off,
-        trans_cobranza,trans_actualizacion_datos, trans_comeback, trans_empleados,
+        # FASE 1: DIMENSIONES MAESTRAS (Actualizar primero para integridad referencial)
+        trans_empleados,
+        trans_dimclientes,
         
-        # FASE 2: SUITE DE INDICADORES (Abonados -> Tickets -> Dimensión)
+        # FASE 2: TABLAS DE HECHOS (FACTS - Ingesta Base)
+        trans_recaudacion, trans_ventas, trans_ventase, trans_reclamos, trans_atc, 
+        trans_ont_off, trans_cobranza, trans_actualizacion_datos, trans_comeback,
+        
+        # FASE 3: SUITE DE INDICADORES (Abonados -> Tickets -> Dimensión Franquicias)
         idf_suite_completa,
         
-        # FASE 3: HECHOS FINALES
+        # FASE 4: HECHOS SECUNDARIOS Y MODELADO FINAL (Dependen de Fases 1 y 2)
         trans_estadistica_abonado,
         afluencia_completa
     ]},
