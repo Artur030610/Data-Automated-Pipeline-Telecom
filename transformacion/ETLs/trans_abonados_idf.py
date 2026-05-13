@@ -42,20 +42,26 @@ COLS_ABONADOS_SILVER = [
     "Franquicia" 
 ]
 
-PATRON_FECHA = re.compile(r"hasta el.*?(\d{1,2}\W\d{1,2}\W\d{4})", re.IGNORECASE)
-
 # ==========================================
 # LÓGICA DE NEGOCIO (FECHAS SNAPSHOT)
 # ==========================================
 def obtener_fecha_corte_snapshot(nombre_archivo):
     try:
         nombre_limpio = os.path.basename(nombre_archivo).lower()
-        match = PATRON_FECHA.search(nombre_limpio)
+        
+        # Patrón súper flexible: (1 o 2 digitos) separador (1 o 2 digitos) separador (4 digitos)
+        # Soporta espacios, guiones, puntos, slashes y guiones bajos como separadores.
+        match = re.search(r"(\d{1,2})[\-\./_\s]+(\d{1,2})[\-\./_\s]+(\d{4})", nombre_limpio)
         
         if not match: 
             return None, None, None
         
-        fecha_str = re.sub(r"\W", "-", match.group(1))
+        # Reconstruimos la fecha garantizando formato DD-MM-YYYY y rellenando con ceros (ej. 1 -> 01)
+        dia = match.group(1).zfill(2)
+        mes = match.group(2).zfill(2)
+        anio = match.group(3)
+        
+        fecha_str = f"{dia}-{mes}-{anio}"
         fecha_archivo = pd.to_datetime(fecha_str, format="%d-%m-%Y", errors='coerce')
         
         if pd.isnull(fecha_archivo):
@@ -209,6 +215,27 @@ def ejecutar():
     # 3. UPSERT EN SILVER
     if not dataframes_list:
         console.print("[bold green]✅ El sistema ya está al día.[/]")
+        ruta_gold = PATHS.get("gold", "data/gold")
+        ruta_gold_completa = os.path.join(ruta_gold, "Stock_Abonados_Gold_Resumen.parquet")
+        
+        # REGLA DE SEGURIDAD: Si no hay archivos nuevos, pero falta el Gold, lo regeneramos desde Silver
+        if not os.path.exists(ruta_gold_completa) and os.path.exists(ruta_silver_completa):
+            console.print("[yellow]⚠️ Silver existe pero falta el Gold. Regenerando tabla resumen...[/]")
+            con = duckdb.connect(database=':memory:')
+            query_gold = f"""
+            COPY (
+                SELECT "Quincena Evaluada", Franquicia, 
+                       COUNT(DISTINCT ID) as Total_Abonados, 
+                       MAX(FechaFin) as Fecha_Corte
+                FROM read_parquet('{ruta_silver_completa.replace(chr(92), '/')}')
+                GROUP BY "Quincena Evaluada", Franquicia
+            ) TO '{ruta_gold_completa.replace(chr(92), '/')}' (FORMAT PARQUET, COMPRESSION 'SNAPPY')
+            """
+            con.execute(query_gold)
+            con.close()
+            console.print("[bold green]✅ Stock_Abonados_Gold_Resumen.parquet reconstruido exitosamente.[/]")
+        else:
+            console.print("[bold green]✅ El sistema ya está al día.[/]")
         return
 
     console.print(f"\n[cyan]🔄 Fase 2: Uniendo con historial Silver (Upsert)...[/]")
