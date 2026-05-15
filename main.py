@@ -175,10 +175,10 @@ def main():
     duracion = time.time() - inicio_transformacion
     tiempo(inicio_transformacion)
     
-    enviar_notificacion_bot(
-        mensaje=f"✅ *Transformación (ETLs) Completada*\n⚙️ Proceso: {seleccion['label'] if seleccion else 'Desconocido'}\n⏱️ Tiempo Total: {duracion/60:.2f} minutos",
-        plataforma="telegram"
-    )
+    #enviar_notificacion_bot(
+        #mensaje=f"✅ *Transformación (ETLs) Completada*\n⚙️ Proceso: {seleccion['label'] if seleccion else 'Desconocido'}\n⏱️ Tiempo Total: {duracion/60:.2f} minutos",
+        #plataforma="telegram"
+    #)
 
 if __name__ == "__main__":
     main()

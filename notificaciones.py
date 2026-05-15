@@ -11,7 +11,7 @@ def enviar_notificacion_bot(mensaje, plataforma="telegram"):
     try:
         if plataforma == "telegram":
             # Reemplaza con tus credenciales reales en config.py
-            bot_token = PATHS.get("telegram_bot_token", "TU_TOKEN_AQUI") 
+            bot_token = PATHS.get("telegram_bot_token", "TU_TOKEN_AQUI1") 
             chat_id = PATHS.get("telegram_chat_id", "TU_CHAT_ID_AQUI")
             
             if bot_token == "TU_TOKEN_AQUI":

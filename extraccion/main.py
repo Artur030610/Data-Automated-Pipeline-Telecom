@@ -197,10 +197,10 @@ def main():
     tiempo(inicio_extraccion)
     
     # --- NOTIFICACIÓN AL BOT ---
-    enviar_notificacion_bot(
-        mensaje=f"✅ *Extracción SAE Completada*\n🤖 Reporte(s): {seleccion['label'] if seleccion else 'Desconocido'}\n📅 Rango: {f_ini} al {f_fin}\n⏱️ Tiempo Total: {duration/60:.2f} minutos",
-        plataforma="telegram" # Puedes cambiarlo a "webhook" si prefieres Slack o Discord
-    )
+    #enviar_notificacion_bot(
+        #mensaje=f"✅ *Extracción SAE Completada*\n🤖 Reporte(s): {seleccion['label'] if seleccion else 'Desconocido'}\n📅 Rango: {f_ini} al {f_fin}\n⏱️ Tiempo Total: {duration/60:.2f} minutos",
+       # plataforma="telegram" # Puedes cambiarlo a "webhook" si prefieres Slack o Discord
+    #)
 
 if __name__ == "__main__":
     main()
