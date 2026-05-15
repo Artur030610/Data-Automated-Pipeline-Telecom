@@ -45,7 +45,7 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
         
         col = ["N° Abonado", "Cliente", "Fecha Contrato", "Estatus",
                 "Suscripción","Grupo Afinidad", "Nombre Franquicia",
-                "Ciudad", "Vendedor", "Serv/Paquete"]
+                "Ciudad", "Vendedor", "Serv/Paquete", "Fecha nacimiento"]
         listado_abonados(page, fecha_inicial_str, fecha_final_str, motivo_str = None, estatus_list=None, col_table=col) #type: ignore
         
 
@@ -96,4 +96,4 @@ def descargar_abonados(fecha_inicial_str: str, fecha_final_str: str):
         console.print("[dim]⏭️ Omitiendo guardado de snapshot IdF.[/]")
 
 if __name__ == "__main__":
-    descargar_abonados("20/03/2026", "23/03/2026")
+    descargar_abonados("20/03/2026", "15/05/2026")
